@@ -12,6 +12,7 @@ from pathlib import Path
 import pytest
 
 from distiller.config import Settings, load_settings
+from distiller.models import Block, BookDocument, Chapter, Chunk
 from distiller.utils import wrap_text
 
 FIXTURE_CHAPTERS: list[tuple[str, str]] = [
@@ -34,6 +35,7 @@ FIXTURE_CHAPTERS: list[tuple[str, str]] = [
 
 EpubFactory = Callable[..., Path]
 PdfFactory = Callable[..., Path]
+CorpusFactory = Callable[..., "tuple[BookDocument, list[Chunk]]"]
 
 
 @pytest.fixture()
@@ -124,3 +126,48 @@ def sample_epub(epub_factory: EpubFactory, tmp_path: Path) -> Path:
 def sample_pdf(pdf_factory: PdfFactory, tmp_path: Path) -> Path:
     """A three-page PDF fixture."""
     return pdf_factory(tmp_path / "lantern.pdf")
+
+
+@pytest.fixture()
+def corpus_factory() -> CorpusFactory:
+    """Factory building an in-memory book plus one chunk per chapter.
+
+    Used by synthesis tests, which need chunks but no files or embedder.
+    """
+
+    def _make(
+        chapters: list[tuple[str, str]] | None = None,
+    ) -> tuple[BookDocument, list[Chunk]]:
+        book = BookDocument(
+            book_id="synthesis-book",
+            title="The Lantern Keeper",
+            source_path="lantern.epub",
+            source_format="epub",
+            chapters=[
+                Chapter(
+                    title=title,
+                    blocks=[
+                        Block(type="heading", text=title, level=1),
+                        Block(type="paragraph", text=text),
+                    ],
+                )
+                for title, text in (chapters or FIXTURE_CHAPTERS)
+            ],
+        )
+        chunks: list[Chunk] = []
+        for ordinal, chapter in enumerate(book.chapters):
+            chunk_text = "\n\n".join(block.text for block in chapter.blocks)
+            chunks.append(
+                Chunk(
+                    id=Chunk.make_id(book.book_id, ordinal, chunk_text),
+                    book_id=book.book_id,
+                    ordinal=ordinal,
+                    text=chunk_text,
+                    chapter=chapter.title,
+                    heading_path=[chapter.title],
+                    char_count=len(chunk_text),
+                )
+            )
+        return book, chunks
+
+    return _make

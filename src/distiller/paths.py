@@ -74,6 +74,31 @@ class BookPaths:
         """LLM-generated chunk contexts cache (``enrichment.jsonl``)."""
         return self.root / "enrichment.jsonl"
 
+    @property
+    def dataset_dir(self) -> Path:
+        """Synthetic QA and RAFT dataset directory (``dataset/``)."""
+        return self.root / "dataset"
+
+    @property
+    def dataset_qa_jsonl(self) -> Path:
+        """Generated QA pairs, pre-filter (``dataset/qa.jsonl``)."""
+        return self.dataset_dir / "qa.jsonl"
+
+    @property
+    def dataset_rejected_jsonl(self) -> Path:
+        """Pairs rejected by the filters, with reasons (``dataset/rejected.jsonl``)."""
+        return self.dataset_dir / "rejected.jsonl"
+
+    @property
+    def dataset_raft_jsonl(self) -> Path:
+        """RAFT training examples (``dataset/raft.jsonl``)."""
+        return self.dataset_dir / "raft.jsonl"
+
+    @property
+    def dataset_manifest(self) -> Path:
+        """Dataset provenance and counts (``dataset/manifest.json``)."""
+        return self.dataset_dir / "manifest.json"
+
     def ensure(self) -> BookPaths:
         """Create the artifact directory if it does not exist yet.
 

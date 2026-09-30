@@ -134,6 +134,36 @@ class StoreSettings(BaseModel):
     backend: Literal["numpy", "qdrant"] = "numpy"
 
 
+class SynthesisSettings(BaseModel):
+    """Synthetic QA and RAFT dataset settings.
+
+    Attributes:
+        max_chunks: Maximum chunks sampled for generation (cost control).
+        questions_per_chunk: Questions requested per chunk in one LLM call.
+        distractors: Distractor chunks included per RAFT example.
+        negative_ratio: Fraction of examples built as unanswerable negatives.
+        seed: Seed for sampling and example shuffling (reproducibility).
+    """
+
+    max_chunks: int = 100
+    questions_per_chunk: int = 2
+    distractors: int = 4
+    negative_ratio: float = 0.15
+    seed: int = 13
+
+    @model_validator(mode="after")
+    def _validate_bounds(self) -> SynthesisSettings:
+        if self.max_chunks < 1:
+            raise ValueError("synthesis.max_chunks must be >= 1")
+        if self.questions_per_chunk < 1:
+            raise ValueError("synthesis.questions_per_chunk must be >= 1")
+        if self.distractors < 0:
+            raise ValueError("synthesis.distractors must be >= 0")
+        if not 0.0 <= self.negative_ratio <= 1.0:
+            raise ValueError("synthesis.negative_ratio must be between 0 and 1")
+        return self
+
+
 class EnrichmentSettings(BaseModel):
     """Contextual retrieval settings.
 
@@ -190,6 +220,7 @@ class Settings(BaseSettings):
     ingest: IngestSettings = Field(default_factory=IngestSettings)
     chunking: ChunkingSettings = Field(default_factory=ChunkingSettings)
     enrichment: EnrichmentSettings = Field(default_factory=EnrichmentSettings)
+    synthesis: SynthesisSettings = Field(default_factory=SynthesisSettings)
     retrieval: RetrievalSettings = Field(default_factory=RetrievalSettings)
     store: StoreSettings = Field(default_factory=StoreSettings)
     evaluation: EvaluationSettings = Field(default_factory=EvaluationSettings)
