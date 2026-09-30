@@ -13,8 +13,9 @@ RAFT-style fine-tuning.
 
 - **Stack**: Python 3.12+, pydantic/pydantic-settings, Typer CLI, NumPy/Qdrant,
   sentence-transformers (optional), ruff + mypy(strict) + pytest.
-- **Status**: v1 complete (ingest → chunk → hybrid index → cited answers → eval),
-  fully offline test suite (79 tests, hash embedder + fake LLM).
+- **Status**: v1 complete (ingest → chunk → hybrid index → cited answers → eval);
+  contextual retrieval implemented (`specs/contextual-retrieval/`); fully offline
+  test suite (96 tests, hash embedder + fake LLM).
 
 ---
 
@@ -100,7 +101,7 @@ Cross-package access goes through each package's `__init__`.
 | Phase | Scope | State |
 |-------|-------|-------|
 | v1 | Ingest → chunk → hybrid index → cited answers → eval harness | ✅ done |
-| Phase 1 | Contextual chunk enrichment, reranking ablations | planned |
+| Phase 1 | Contextual chunk enrichment (`specs/contextual-retrieval/`), reranking ablations | 🔄 enrichment done, ablations planned |
 | Phase 2 | Synthetic QA + RAFT dataset generation (cloud teacher) | planned |
 | Phase 3 | Qwen3-4B QLoRA on a free T4 + eval vs baseline | planned |
 | Phase 4 | GGUF export + CPU/GPU-hybrid serving (llama.cpp/Ollama) | planned |

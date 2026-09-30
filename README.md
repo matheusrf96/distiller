@@ -50,6 +50,9 @@ uv run distiller ingest fixtures/sherlock.epub
 # 2. Chunk + embed + index it
 uv run distiller index the-adventures-of-sherlock-holmes
 
+# ...or with contextual retrieval (Phase 1): an LLM situates each chunk
+uv run distiller index the-adventures-of-sherlock-holmes --contextual
+
 # 3. Ask questions — answers carry citations into the book
 uv run distiller ask the-adventures-of-sherlock-holmes "What does Holmes infer from the hat?"
 uv run distiller ask the-adventures-of-sherlock-holmes "What colour was the tower?" --json
@@ -67,13 +70,14 @@ Everything for one book lives in `artifacts/<book-id>/`:
 
 ```
 artifacts/the-lantern-keeper/
-├── book.json        # structured parse: chapters → blocks
-├── parsed.md        # human-readable rendering
-├── chunks.jsonl     # retrieval units with provenance (chapter, section, pages)
+├── book.json         # structured parse: chapters → blocks
+├── parsed.md         # human-readable rendering
+├── chunks.jsonl      # retrieval units with provenance (chapter, section, pages)
+├── enrichment.jsonl  # cached LLM contexts (contextual retrieval only)
 ├── index/
-│   ├── metadata.json # embedder identity, dim, store, chunk_count
-│   └── store/       # vectors + records (numpy) or qdrant local db
-└── eval/report.json # metrics per run
+│   ├── metadata.json # embedder identity, dim, store, chunk_count, contextual
+│   └── store/        # vectors + records (numpy) or qdrant local db
+└── eval/report.json  # metrics per run (+ index identity for run comparison)
 ```
 
 ## Configuration
@@ -101,6 +105,10 @@ export DISTILLER_RETRIEVAL__TOP_K_FINAL=8
 
 # Vector store: numpy (default, zero-infra) | qdrant (local mode)
 export DISTILLER_STORE__BACKEND=numpy
+
+# Contextual retrieval (opt-in): LLM-generated context prefixes per chunk
+export DISTILLER_ENRICHMENT__ENABLED=true
+export DISTILLER_ENRICHMENT__MAX_CONTEXT_CHARS=500
 ```
 
 `distiller.toml` example:
@@ -134,6 +142,9 @@ book.pdf / book.epub
         │                                              heading-tracked,
         │                                              page-annotated
         ▼
+  (optional) contextual enrichment        (enrichment/) 1-2 sentence LLM context
+        │                                              per chunk (cached, index-only)
+        ▼
   Qwen3-Embedding-0.6B (CPU)  +  BM25     (indexing/)
         ▼
   NumpyStore / Qdrant local
@@ -153,6 +164,10 @@ Design decisions worth knowing:
 - **The index remembers its embedder.** Mixing embedders returns garbage, so
   `index/metadata.json` records the exact embedder identity and loading fails loudly on
   mismatch.
+- **Contextual retrieval is index-only.** With `--contextual`, an LLM writes a
+  1–2 sentence context per chunk that is used **only** for embedding and BM25
+  (`Chunk.index_text`); prompts, answers and citations keep the original book text.
+  Contexts are cached per book (`enrichment.jsonl`), so re-indexing costs nothing.
 - **Metrics are deterministic by default.** `distiller eval` computes retrieval hit
   rate, refusal accuracy, snippet coverage and citation coverage with no LLM; RAGAS
   (LLM-judged faithfulness) is opt-in via `--ragas`.
