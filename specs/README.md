@@ -17,3 +17,4 @@ Each folder contains:
 |---------|--------|---------|
 | [contextual-retrieval](contextual-retrieval/) | ✅ implemented | LLM-generated situating context per chunk for embedding/BM25 (Phase 1) |
 | [reranking-ablations](reranking-ablations/) | ✅ implemented | Compare retrieval configs (rerank on/off, top-k sweep) on one golden set (Phase 1) |
+| [synthetic-qa](synthetic-qa/) | ✅ implemented | Grounded QA generation + deterministic filtering + RAFT training examples (Phase 2) |
