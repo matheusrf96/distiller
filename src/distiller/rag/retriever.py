@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from typing import TYPE_CHECKING
 
 from ..models import RetrievedChunk
@@ -74,6 +75,23 @@ class Retriever:
 
 
 def _chapter_matches(chunk_chapter: str, wanted: str | None) -> bool:
+    """Match a chapter filter with word boundaries.
+
+    Word-boundary (or exact) matching avoids the ``Chapter 1`` / ``Chapter 10``
+    collision while still letting short filters match, e.g. ``storm`` for
+    ``The Storm``.
+    """
     if not wanted:
         return True
-    return wanted.strip().lower() in chunk_chapter.lower()
+    haystack = _normalize_whitespace(chunk_chapter).lower()
+    needle = _normalize_whitespace(wanted).lower()
+    if not needle:
+        return True
+    left = r"\b" if needle[0].isalnum() else ""
+    right = r"\b" if needle[-1].isalnum() else ""
+    pattern = f"{left}{re.escape(needle)}{right}"
+    return re.search(pattern, haystack) is not None
+
+
+def _normalize_whitespace(text: str) -> str:
+    return " ".join(text.split())
