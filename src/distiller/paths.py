@@ -69,6 +69,11 @@ class BookPaths:
         """Default golden question set (``golden.yaml``)."""
         return self.root / "golden.yaml"
 
+    @property
+    def enrichment_jsonl(self) -> Path:
+        """LLM-generated chunk contexts cache (``enrichment.jsonl``)."""
+        return self.root / "enrichment.jsonl"
+
     def ensure(self) -> BookPaths:
         """Create the artifact directory if it does not exist yet.
 

@@ -134,6 +134,23 @@ class StoreSettings(BaseModel):
     backend: Literal["numpy", "qdrant"] = "numpy"
 
 
+class EnrichmentSettings(BaseModel):
+    """Contextual retrieval settings.
+
+    Enrichment asks the configured LLM for a short situating context per chunk;
+    the context is used only for embedding and lexical indexing.
+
+    Attributes:
+        enabled: Generate per-chunk contexts before indexing (off by default).
+        max_document_chars: Chapter excerpt budget fed to the LLM for situating.
+        max_context_chars: Hard cap for the generated context prefix.
+    """
+
+    enabled: bool = False
+    max_document_chars: int = 6000
+    max_context_chars: int = 500
+
+
 class EvaluationSettings(BaseModel):
     """Evaluation settings.
 
@@ -172,6 +189,7 @@ class Settings(BaseSettings):
     embedding: EmbeddingSettings = Field(default_factory=EmbeddingSettings)
     ingest: IngestSettings = Field(default_factory=IngestSettings)
     chunking: ChunkingSettings = Field(default_factory=ChunkingSettings)
+    enrichment: EnrichmentSettings = Field(default_factory=EnrichmentSettings)
     retrieval: RetrievalSettings = Field(default_factory=RetrievalSettings)
     store: StoreSettings = Field(default_factory=StoreSettings)
     evaluation: EvaluationSettings = Field(default_factory=EvaluationSettings)

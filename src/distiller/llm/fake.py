@@ -14,6 +14,7 @@ if TYPE_CHECKING:
     from collections.abc import Callable
 
 _DOC_RE = re.compile(r'<doc id="1"[^>]*>\n(.*?)\n</doc>', re.DOTALL)
+_EXCERPT_RE = re.compile(r"<excerpt>\n(.*?)\n</excerpt>", re.DOTALL)
 _REFUSAL_TEMPLATE = "I couldn't find that in {title}."
 
 
@@ -50,19 +51,28 @@ class FakeLLM:
     ) -> str:
         """Answer with the first retrieved document, or refuse when none exist.
 
+        Contextual-enrichment prompts (``<excerpt>`` blocks) receive a
+        deterministic short sentence so offline index builds exercise enrichment.
+
         Args:
             system: System prompt (unused by the fake).
-            user: User prompt containing ``<doc>`` blocks.
+            user: User prompt containing ``<doc>`` or ``<excerpt>`` blocks.
             temperature: Ignored.
             max_tokens: Ignored.
 
         Returns:
-            Snippet answer with a ``[1]`` citation, or the refusal sentence.
+            Snippet answer with a ``[1]`` citation, a situating sentence, or the
+            refusal sentence.
         """
         if callable(self._response):
             return self._response(user)
         if self._response is not None:
             return self._response
+
+        excerpt = _EXCERPT_RE.search(user)
+        if excerpt:
+            snippet = " ".join(excerpt.group(1).split())[:80].rstrip(" .")
+            return f"A passage about: {snippet}."
 
         match = _DOC_RE.search(user)
         if not match:

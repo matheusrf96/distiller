@@ -114,7 +114,8 @@ class Chunk(DomainModel):
         id: Stable content-addressed id (``book:ordinal:hash``).
         book_id: Owning book.
         ordinal: Position of the chunk within the book index.
-        text: Chunk text as embedded and shown to the model.
+        text: Chunk text as shown to the model; never synthetically modified.
+        context: LLM-generated situating context used only for indexing.
         chapter: Chapter title the chunk belongs to.
         heading_path: Heading stack at the chunk's anchor content block.
         page_start: First source page covered, when known.
@@ -128,6 +129,7 @@ class Chunk(DomainModel):
     book_id: str
     ordinal: int
     text: str
+    context: str | None = None
     chapter: str
     heading_path: list[str] = Field(default_factory=list)
     page_start: int | None = None
@@ -149,6 +151,11 @@ class Chunk(DomainModel):
             Id of the form ``<book_id>:<ordinal>:<content-hash>``.
         """
         return f"{book_id}:{ordinal:04d}:{stable_hash_hex(text, 10)}"
+
+    @property
+    def index_text(self) -> str:
+        """Text used for embedding and lexical indexing (context prefix + text)."""
+        return f"{self.context}\n\n{self.text}" if self.context else self.text
 
 
 class RetrievedChunk(DomainModel):
