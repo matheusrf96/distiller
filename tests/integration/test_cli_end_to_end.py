@@ -108,3 +108,49 @@ def test_cli_reports_domain_errors_without_tracebacks(
     assert result.exit_code != 0
     assert "Invalid golden set" in result.output
     assert "Traceback" not in result.output
+
+
+def test_contextual_index_end_to_end(
+    offline_env: Path,
+    epub_factory: Callable[..., Path],
+    tmp_path: Path,
+) -> None:
+    """`index --contextual` enriches; answers stay quotable; eval records the index.
+
+    Covers REQ-CR-006 (original text in prompts), REQ-CR-008 (CLI flag),
+    REQ-CR-011 (eval report index block) and REQ-CR-012 (offline fake LLM).
+    """
+    epub_path = epub_factory(tmp_path / "lantern.epub")
+    invoke_cli(["ingest", str(epub_path)])
+    invoke_cli(["index", BOOK_ID, "--contextual"])
+
+    metadata = json.loads(
+        (offline_env / BOOK_ID / "index" / "metadata.json").read_text(encoding="utf-8")
+    )
+    assert metadata["contextual"] is True
+    assert metadata["enriched_chunks"] > 0
+
+    result = invoke_cli(
+        ["ask", BOOK_ID, "What happened to the lantern during the storm?"]
+    )
+    # the synthetic context never leaks into prompts or answers
+    assert "A passage about" not in result.output
+    assert "Chapter Two" in result.output
+
+    golden_path = tmp_path / "golden.yaml"
+    save_golden(
+        golden_path,
+        [
+            GoldenItem(
+                question="What happened to the lantern during the storm?",
+                expected_chapters=["Chapter Two"],
+            )
+        ],
+    )
+    invoke_cli(["eval", BOOK_ID, "--golden", str(golden_path)])
+
+    report = json.loads(
+        (offline_env / BOOK_ID / "eval" / "report.json").read_text(encoding="utf-8")
+    )
+    assert report["index"]["contextual"] is True
+    assert report["index"]["embedder"] == "hash:512"

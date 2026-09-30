@@ -119,6 +119,13 @@ def index(
             "--embedding-backend", help="sentence-transformers | hash (offline tests)"
         ),
     ] = None,
+    contextual: Annotated[
+        bool | None,
+        typer.Option(
+            "--contextual/--no-contextual",
+            help="Generate per-chunk context before indexing (contextual retrieval).",
+        ),
+    ] = None,
 ) -> None:
     """Chunk + embed + index a book (writes chunks.jsonl and the vector store)."""
     settings = settings_from_context(ctx)
@@ -126,6 +133,8 @@ def index(
         settings.embedding = apply_overrides(
             settings.embedding, backend=embedding_backend
         )
+    if contextual is not None:
+        settings.enrichment = apply_overrides(settings.enrichment, enabled=contextual)
 
     with console.status(
         f"Building index for '{book_id}' "
@@ -214,9 +223,18 @@ def evaluate(
     pipeline = build_pipeline(settings, bundle)
     results, samples = run_golden_set(pipeline, golden_items)
 
+    index_metadata = (
+        read_json(paths.index_metadata) if paths.index_metadata.exists() else {}
+    )
+
     report: dict[str, Any] = {
         "book_id": book_id,
         "model": pipeline_model_name(pipeline),
+        "index": {
+            "embedder": index_metadata.get("embedder"),
+            "contextual": index_metadata.get("contextual"),
+            "enriched_chunks": index_metadata.get("enriched_chunks"),
+        },
         "metrics": summarize(results),
         "items": [result.model_dump() for result in results],
     }
