@@ -4,8 +4,18 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+from ..models import refusal_text
+
 if TYPE_CHECKING:
     from ..models import RetrievedChunk
+
+__all__ = [
+    "SYSTEM_TEMPLATE",
+    "build_system_prompt",
+    "build_user_prompt",
+    "refusal_text",
+    "render_documents",
+]
 
 SYSTEM_TEMPLATE = """You are a meticulous research assistant for the book "{title}".
 
@@ -16,13 +26,6 @@ Place the citation directly after the claim it supports.
 3. When the book's exact wording matters, quote it verbatim inside double quotes.
 4. If the documents do not contain the answer, reply exactly: "{refusal}"
 5. Be concise and precise. Prefer short paragraphs or bullet points over long prose."""
-
-REFUSAL_TEMPLATE = "I couldn't find that in {title}."
-
-
-def refusal_text(book_title: str) -> str:
-    """Return the canonical refusal sentence for a book."""
-    return REFUSAL_TEMPLATE.format(title=book_title)
 
 
 def build_system_prompt(book_title: str) -> str:

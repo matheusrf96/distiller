@@ -248,3 +248,21 @@ def format_location(
         )
         label += f" ({pages})"
     return label
+
+
+REFUSAL_TEMPLATE = "I couldn't find that in {title}."
+
+
+def refusal_text(book_title: str) -> str:
+    """Return the canonical refusal sentence for a book.
+
+    Shared by the RAG prompt and the RAFT training targets so that training
+    data matches inference behaviour.
+
+    Args:
+        book_title: Title of the book being queried.
+
+    Returns:
+        The refusal sentence, e.g. ``I couldn't find that in The Book.``
+    """
+    return REFUSAL_TEMPLATE.format(title=book_title)
