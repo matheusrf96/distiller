@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
@@ -19,6 +20,8 @@ if TYPE_CHECKING:
     from ..config import Settings
     from .embedder import Embedder
     from .store import VectorStore
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass(slots=True)
@@ -133,7 +136,8 @@ def load_index(
 
     Raises:
         IndexNotFoundError: If the book has not been indexed yet.
-        IndexBuildError: If the configured embedder differs from the indexed one.
+        IndexBuildError: If artifacts are corrupt or the configured embedder
+            differs from the indexed one.
     """
     paths = BookPaths.for_book(settings.artifacts_dir, book_id)
     if not paths.index_metadata.exists():
@@ -151,11 +155,25 @@ def load_index(
             f"Re-run `distiller index {book_id}` or fix the embedding settings."
         )
 
-    book = BookDocument.model_validate(read_json(paths.book_json))
-    chunks = [Chunk.model_validate(row) for row in read_jsonl(paths.chunks_jsonl)]
-    store = open_store(
-        paths.store_dir, int(metadata["dim"]), str(metadata.get("store", "numpy"))
-    )
+    try:
+        book = BookDocument.model_validate(read_json(paths.book_json))
+        chunks = [Chunk.model_validate(row) for row in read_jsonl(paths.chunks_jsonl)]
+    except (OSError, ValueError) as exc:
+        raise IndexBuildError(
+            f"Index artifacts for '{book_id}' are incomplete or corrupt. "
+            f"Re-run `distiller ingest {book_id}` and `distiller index {book_id}`."
+        ) from exc
+
+    try:
+        store = open_store(
+            paths.store_dir, int(metadata["dim"]), str(metadata.get("store", "numpy"))
+        )
+    except (OSError, ValueError, KeyError) as exc:
+        raise IndexBuildError(
+            f"Vector store for '{book_id}' is incomplete or corrupt. "
+            f"Re-run `distiller index {book_id}`."
+        ) from exc
+
     bm25 = BM25Index([chunk.id for chunk in chunks], [chunk.text for chunk in chunks])
     return IndexBundle(
         book=book, chunks=chunks, store=store, bm25=bm25, embedder=embedder
@@ -164,6 +182,9 @@ def load_index(
 
 def list_books(artifacts_dir: Path | str) -> list[dict[str, Any]]:
     """Summarize every ingested book, for the CLI.
+
+    Unreadable or corrupt book artifacts are skipped with a warning so that one
+    bad directory cannot break the listing.
 
     Args:
         artifacts_dir: Root artifacts directory.
@@ -179,7 +200,11 @@ def list_books(artifacts_dir: Path | str) -> list[dict[str, Any]]:
         book_json = child / "book.json"
         if not book_json.exists():
             continue
-        data = read_json(book_json)
+        try:
+            data = read_json(book_json)
+        except (OSError, ValueError) as exc:
+            logger.warning("Skipping unreadable book artifact %s: %s", book_json, exc)
+            continue
         books.append(
             {
                 "book_id": data.get("book_id", child.name),

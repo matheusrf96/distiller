@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 import pytest
 
 from distiller.exceptions import IndexBuildError, IndexNotFoundError
-from distiller.indexing import build_index, load_index
+from distiller.indexing import build_index, list_books, load_index
 from distiller.ingest import ingest_book
 from distiller.paths import BookPaths
 from distiller.rag import Retriever
@@ -81,3 +81,40 @@ def test_building_index_without_ingest_raises(settings: Settings) -> None:
 
     with pytest.raises(BookNotFoundError, match="distiller ingest"):
         build_index("never-ingested", settings)
+
+
+def test_corrupt_store_raises_actionable_error(
+    settings: Settings, sample_epub: Path
+) -> None:
+    """A deleted store directory is reported as an index problem, not a crash."""
+    import shutil
+
+    book_id, _ = ingest_and_index(sample_epub, settings)
+    store_dir = BookPaths.for_book(settings.artifacts_dir, book_id).store_dir
+    shutil.rmtree(store_dir)
+
+    with pytest.raises(IndexBuildError, match="Vector store"):
+        load_index(book_id, settings)
+
+
+def test_missing_book_json_raises_actionable_error(
+    settings: Settings, sample_epub: Path
+) -> None:
+    """A deleted book.json is reported as corruption with a recovery hint."""
+    book_id, _ = ingest_and_index(sample_epub, settings)
+    Path(settings.artifacts_dir, book_id, "book.json").unlink()
+
+    with pytest.raises(IndexBuildError, match="incomplete or corrupt"):
+        load_index(book_id, settings)
+
+
+def test_list_books_skips_corrupt_entries(
+    settings: Settings, sample_epub: Path
+) -> None:
+    """One unreadable book.json cannot break the listing."""
+    book_id, _ = ingest_and_index(sample_epub, settings)
+    Path(settings.artifacts_dir, book_id, "book.json").write_text(
+        "{not json", encoding="utf-8"
+    )
+
+    assert list_books(settings.artifacts_dir) == []
