@@ -1,0 +1,149 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "distiller"
+version = "0.1.0"
+description = "Distill PDF/ePub books into a specialized tiny LLM via RAG + fine-tuning"
+readme = "README.md"
+requires-python = ">=3.12,<4.0"
+license = { text = "MIT" }
+dependencies = [
+    "pydantic >=2.9",
+    "pydantic-settings >=2.5",
+    "typer >=0.12",
+    "rich >=13.7",
+    "numpy >=1.26",
+    "openai >=1.40",
+    "rank-bm25 >=0.2.2",
+    "PyYAML >=6.0",
+    # Document parsing: the core feature, so these are core dependencies.
+    "EbookLib >=0.18",
+    "beautifulsoup4 >=4.12",
+    "markdownify >=0.13",
+    "PyMuPDF >=1.24",
+]
+
+[project.optional-dependencies]
+# AI PDF parsing (heavier): docling for structure/tables, pymupdf4llm as fast Markdown.
+pdf-ai = ["docling >=2.5", "pymupdf4llm >=0.0.17"]
+# Local embedding and reranking models (pulls torch).
+embed = ["sentence-transformers >=3.0"]
+# Qdrant vector store (local mode or server).
+index = ["qdrant-client >=1.12"]
+# LLM-judged evaluation.
+eval = ["ragas >=0.2.6", "datasets >=2.20"]
+# Everything needed for the full pipeline.
+all = ["distiller[pdf-ai,embed,index,eval]"]
+
+[dependency-groups]
+dev = [
+    "pytest >=8.0",
+    "pytest-cov >=5.0",
+    "pytest-xdist >=3.6",
+    "ruff >=0.9.0",
+    "mypy >=1.11",
+    "types-PyYAML >=6.0",
+]
+
+[project.scripts]
+distiller = "distiller.cli.main:app"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/distiller"]
+
+# ---------------------------------------------------------------------------
+# Formatting and linting (ruff is the single formatter + linter; it is
+# black-compatible at 88 chars and enforces isort import ordering).
+# ---------------------------------------------------------------------------
+
+[tool.ruff]
+line-length = 88
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = [
+    "E",    # pycodestyle errors
+    "F",    # pyflakes
+    "I",    # isort (import ordering)
+    "UP",   # pyupgrade
+    "B",    # bugbear
+    "SIM",  # simplify
+    "RUF",  # ruff-specific
+    "C90",  # mccabe complexity
+    "TC",   # typing-only imports (TYPE_CHECKING blocks)
+    "RET",  # clean returns
+    "LOG",  # logging practices
+    "PTH",  # pathlib over os.path
+    "S",    # bandit security checks (replaces the standalone bandit run)
+]
+
+[tool.ruff.lint.mccabe]
+max-complexity = 10
+
+[tool.ruff.lint.flake8-type-checking]
+# Pydantic resolves model annotations at runtime; never move those imports
+# into TYPE_CHECKING blocks.
+runtime-evaluated-base-classes = [
+    "pydantic.BaseModel",
+    "pydantic_settings.BaseSettings",
+    "distiller.models.DomainModel",
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests use assert statements and print-like output by design.
+"tests/**" = ["S101"]
+
+# ---------------------------------------------------------------------------
+# Type checking: strict, per Devotion's Code Quality Specification.
+# ---------------------------------------------------------------------------
+
+[tool.mypy]
+python_version = "3.12"
+strict = true
+warn_return_any = true
+warn_unused_configs = true
+files = ["src"]
+
+[[tool.mypy.overrides]]
+module = ["rank_bm25.*", "typer.*", "rich.*"]
+ignore_missing_imports = true
+
+# ebooklib ships no type information yet.
+[[tool.mypy.overrides]]
+module = ["ebooklib.*"]
+ignore_missing_imports = true
+
+# PyMuPDF's Document constructor and page methods are only partially annotated.
+[[tool.mypy.overrides]]
+module = ["distiller.ingest.pdf"]
+disallow_untyped_calls = false
+
+# ---------------------------------------------------------------------------
+# Testing
+# ---------------------------------------------------------------------------
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+python_files = ["test_*.py"]
+python_classes = ["Test*"]
+python_functions = ["test_*"]
+addopts = "-v --tb=short"
+markers = [
+    "integration: tests that need downloaded fixtures, heavy models, or network access",
+]
+
+[tool.coverage.run]
+source = ["src/distiller"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+fail_under = 80
+exclude_lines = [
+    "pragma: no cover",
+    "if TYPE_CHECKING:",
+    "raise NotImplementedError",
+]
