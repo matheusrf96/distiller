@@ -64,6 +64,9 @@ uv run distiller eval the-adventures-of-sherlock-holmes --ragas
 # ...or compare retrieval configurations (rerank on/off, top-k sweep)
 uv run distiller ablation the-adventures-of-sherlock-holmes --top-k 4,8,12
 
+# 5. Distill training data: grounded QA + RAFT examples (Phase 2)
+uv run distiller synth the-adventures-of-sherlock-holmes --max-chunks 100
+
 # List / inspect
 uv run distiller books
 uv run distiller info the-adventures-of-sherlock-holmes
@@ -80,6 +83,7 @@ artifacts/the-lantern-keeper/
 ├── index/
 │   ├── metadata.json # embedder identity, dim, store, chunk_count, contextual
 │   └── store/        # vectors + records (numpy) or qdrant local db
+├── dataset/          # Phase 2: qa.jsonl, rejected.jsonl, raft.jsonl, manifest.json
 └── eval/report.json  # metrics per run (+ index identity for run comparison)
 ```
 

@@ -14,8 +14,9 @@ RAFT-style fine-tuning.
 - **Stack**: Python 3.12+, pydantic/pydantic-settings, Typer CLI, NumPy/Qdrant,
   sentence-transformers (optional), ruff + mypy(strict) + pytest.
 - **Status**: v1 complete (ingest → chunk → hybrid index → cited answers → eval);
-  Phase 1 complete (contextual retrieval + reranking ablations, see `specs/`);
-  fully offline test suite (106 tests, hash embedder + fake LLM).
+  Phase 1 complete (contextual retrieval + reranking ablations) and Phase 2
+  complete (synthetic QA + RAFT dataset, see `specs/`); fully offline test suite
+  (132 tests, hash embedder + fake LLM).
 
 ---
 
@@ -71,13 +72,16 @@ src/distiller/
 ├── optional_deps.py     # dynamic loading of extra-gated dependencies
 ├── ingest/              # book -> BookDocument (epub, pdf backends, markdown, text)
 ├── chunking/            # BookDocument -> chunks (structure-aware, chapter-bounded)
+├── enrichment/          # optional contextual retrieval (LLM context per chunk)
 ├── indexing/            # chunks -> vectors (embedders, numpy/qdrant stores, BM25)
 ├── rag/                 # retriever, reranker, prompts, generator, QA pipeline
-├── evaluation/          # golden sets, deterministic metrics, RAGAS runner
+├── synthesis/           # Phase 2: QA generation, filters, RAFT dataset
+├── evaluation/          # golden sets, deterministic metrics, ablations, RAGAS
 └── cli/                 # Typer commands (thin) + context/render helpers
 ```
 
-Layering: `ingest → chunking → indexing → rag → evaluation`, wired by `cli/`.
+Layering: `ingest → chunking → enrichment → indexing → rag → evaluation` plus
+`synthesis` (which consumes chunks and the LLM), wired by `cli/`.
 Cross-package access goes through each package's `__init__`.
 
 ---
@@ -102,7 +106,7 @@ Cross-package access goes through each package's `__init__`.
 |-------|-------|-------|
 | v1 | Ingest → chunk → hybrid index → cited answers → eval harness | ✅ done |
 | Phase 1 | Contextual chunk enrichment + reranking ablations (`specs/`) | ✅ done |
-| Phase 2 | Synthetic QA + RAFT dataset generation (cloud teacher) | planned |
+| Phase 2 | Synthetic QA + RAFT dataset generation (`specs/synthetic-qa/`) | ✅ done |
 | Phase 3 | Qwen3-4B QLoRA on a free T4 + eval vs baseline | planned |
 | Phase 4 | GGUF export + CPU/GPU-hybrid serving (llama.cpp/Ollama) | planned |
 | Phase 5 | LightRAG/RAPTOR thematic layer (whole-book questions) | planned |
