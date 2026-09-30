@@ -154,3 +154,101 @@ def test_contextual_index_end_to_end(
     )
     assert report["index"]["contextual"] is True
     assert report["index"]["embedder"] == "hash:512"
+
+
+def _prepare_ablation_inputs(
+    epub_factory: Callable[..., Path],
+    tmp_path: Path,
+    *,
+    top_k: str | None = None,
+) -> list[str]:
+    """Ingest, index and write a small golden set; return the ablation argv tail."""
+    epub_path = epub_factory(tmp_path / "lantern.epub")
+    invoke_cli(["ingest", str(epub_path)])
+    invoke_cli(["index", BOOK_ID])
+
+    golden_path = tmp_path / "golden.yaml"
+    save_golden(
+        golden_path,
+        [
+            GoldenItem(
+                question="What happened to the lantern during the storm?",
+                expected_chapters=["Chapter Two"],
+                expected_answer_contains=["cracked"],
+            ),
+            GoldenItem(question="Who won the village sailing race?", answerable=False),
+        ],
+    )
+    arguments = ["ablation", BOOK_ID, "--golden", str(golden_path)]
+    if top_k is not None:
+        arguments += ["--top-k", top_k]
+    return arguments
+
+
+def test_ablation_command_skips_missing_reranker(
+    offline_env: Path,
+    epub_factory: Callable[..., Path],
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """Without the embed extra, rerank variants are skipped, not failed.
+
+    Covers REQ-RA-001, REQ-RA-004 and REQ-RA-006.
+    """
+    monkeypatch.setattr("distiller.cli.context.is_available", lambda module: False)
+    arguments = _prepare_ablation_inputs(epub_factory, tmp_path)
+
+    result = invoke_cli(arguments)
+
+    assert "skipped" in result.output
+    report = json.loads(
+        (offline_env / BOOK_ID / "eval" / "ablation.json").read_text(encoding="utf-8")
+    )
+    assert report["baseline"] == "hybrid"
+    assert [variant["variant"]["name"] for variant in report["variants"]] == [
+        "hybrid",
+        "hybrid+rerank",
+    ]
+    assert report["variants"][0]["metrics"]["item_count"] == 2
+    assert "embed" in report["variants"][1]["skipped_reason"]
+    assert report["index"]["embedder"] == "hash:512"
+
+
+def test_ablation_command_runs_rerank_variants_with_sweep(
+    offline_env: Path,
+    epub_factory: Callable[..., Path],
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """With a reranker available, the sweep matrix runs and JSON matches the file.
+
+    Covers REQ-RA-003, REQ-RA-007 and REQ-RA-010.
+    """
+
+    class StubReranker:
+        @property
+        def name(self) -> str:
+            return "stub-reranker"
+
+        def rerank(self, query: str, items: list, top_k: int) -> list:
+            return list(reversed(items))[:top_k]
+
+    monkeypatch.setattr("distiller.cli.context.is_available", lambda module: True)
+    monkeypatch.setattr(
+        "distiller.cli.context.get_reranker", lambda settings: StubReranker()
+    )
+    arguments = _prepare_ablation_inputs(epub_factory, tmp_path, top_k="4,8")
+
+    result = invoke_cli(arguments)
+    assert "Δ hit" in result.output
+
+    payload = json.loads(
+        (offline_env / BOOK_ID / "eval" / "ablation.json").read_text(encoding="utf-8")
+    )
+    names = [variant["variant"]["name"] for variant in payload["variants"]]
+    assert names == ["hybrid-k4", "hybrid+rerank-k4", "hybrid-k8", "hybrid+rerank-k8"]
+    assert all(variant["skipped_reason"] is None for variant in payload["variants"])
+    assert all(variant["metrics"]["item_count"] == 2 for variant in payload["variants"])
+
+    json_result = invoke_cli([*arguments, "--json"])
+    assert json.loads(json_result.output)["variants"] == payload["variants"]

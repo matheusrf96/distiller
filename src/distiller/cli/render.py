@@ -9,12 +9,26 @@ from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
+from ..evaluation import metric_deltas
+
 if TYPE_CHECKING:
     from pathlib import Path
 
+    from ..evaluation import AblationReport
     from ..models import Answer, BookDocument
 
 console = Console()
+
+_ABLATION_COLUMNS = (
+    ("retrieval_hit_rate", "hit rate"),
+    ("contains_rate", "contains"),
+    ("citation_coverage", "citations"),
+    ("refusal_accuracy", "refusal"),
+)
+_ABLATION_DELTA_COLUMNS = (
+    ("retrieval_hit_rate", "Δ hit"),
+    ("contains_rate", "Δ contains"),
+)
 
 
 def render_ingest(book: BookDocument, artifacts_root: Path) -> None:
@@ -81,6 +95,63 @@ def render_ragas(payload: dict[str, Any]) -> None:
     console.print(
         Panel(json.dumps(payload, indent=2), title="RAGAS", border_style="magenta")
     )
+
+
+def render_ablation(report: AblationReport) -> None:
+    """Render the ablation comparison table with deltas versus the baseline."""
+    deltas = metric_deltas(
+        report, tuple(metric for metric, _ in _ABLATION_DELTA_COLUMNS)
+    )
+
+    table = Table(title=f"Ablation: {report.book_id} ({report.item_count} questions)")
+    table.add_column("variant")
+    table.add_column("rerank", justify="center")
+    table.add_column("top-k", justify="right")
+    for _, label in _ABLATION_COLUMNS:
+        table.add_column(label, justify="right")
+    for _, label in _ABLATION_DELTA_COLUMNS:
+        table.add_column(label, justify="right")
+
+    for result in report.variants:
+        variant = result.variant
+        row = [
+            variant.name,
+            "yes" if variant.rerank else "no",
+            str(variant.top_k_final),
+        ]
+        if result.skipped_reason is None:
+            row.extend(
+                _format_metric(result.metrics.get(metric))
+                for metric, _ in _ABLATION_COLUMNS
+            )
+            row.extend(
+                _format_delta(deltas.get(variant.name, {}).get(metric))
+                for metric, _ in _ABLATION_DELTA_COLUMNS
+            )
+        else:
+            row.extend("—" for _ in _ABLATION_COLUMNS)
+            row.extend("—" for _ in _ABLATION_DELTA_COLUMNS)
+        table.add_row(*row)
+    console.print(table)
+
+    for result in report.variants:
+        if result.skipped_reason:
+            console.print(
+                f"[yellow]{result.variant.name}: skipped — "
+                f"{result.skipped_reason}[/yellow]"
+            )
+
+
+def _format_metric(value: Any) -> str:
+    return "—" if value is None else str(value)
+
+
+def _format_delta(value: float | None) -> str:
+    if value is None:
+        return "—"
+    if value == 0:
+        return "0"
+    return f"{value:+.4f}"
 
 
 def render_books(rows: list[dict[str, Any]]) -> None:

@@ -10,21 +10,31 @@ import typer
 from rich.logging import RichHandler
 
 from ..config import Settings, load_settings
-from ..evaluation import ItemResult, evaluate_item, run_ragas, summarize
+from ..evaluation import (
+    ItemResult,
+    build_variants,
+    evaluate_item,
+    run_ablation,
+    run_ragas,
+    summarize,
+)
 from ..indexing import list_books
 from ..ingest.common import render_book_markdown
 from ..paths import BookPaths
 from ..utils import read_json, write_json
 from .context import (
     apply_overrides,
+    build_ablation_runs,
     build_index_or_fail,
     build_pipeline,
     ingest_or_fail,
     load_book_index,
     load_golden_set,
+    parse_top_k_values,
 )
 from .render import (
     console,
+    render_ablation,
     render_answer,
     render_books,
     render_eval,
@@ -254,6 +264,80 @@ def evaluate(
     render_eval(book_id, report["metrics"], len(results))
     if "ragas" in report:
         render_ragas(report["ragas"])
+    console.print(f"Report written to [cyan]{report_path}[/cyan]")
+
+
+@app.command("ablation")
+def ablation(
+    ctx: typer.Context,
+    book_id: Annotated[str, typer.Argument(help="Book id.")],
+    golden: Annotated[
+        Path | None,
+        typer.Option(
+            "--golden", help="Golden set file (default: artifacts/<book>/golden.yaml)."
+        ),
+    ] = None,
+    limit: Annotated[
+        int | None,
+        typer.Option("--limit", help="Evaluate only the first N questions."),
+    ] = None,
+    top_k: Annotated[
+        str | None,
+        typer.Option("--top-k", help="Comma-separated top-k sweep, e.g. 4,8,12."),
+    ] = None,
+    no_rerank: Annotated[
+        bool,
+        typer.Option("--no-rerank", help="Run only non-reranked variants."),
+    ] = False,
+    as_json: Annotated[
+        bool, typer.Option("--json", help="Print the full report as JSON.")
+    ] = False,
+) -> None:
+    """Compare retrieval configurations (rerank, top-k) on one golden set."""
+    settings = settings_from_context(ctx)
+    paths = BookPaths.for_book(settings.artifacts_dir, book_id)
+    golden_path = golden or paths.golden_yaml
+    if not golden_path.exists():
+        raise typer.BadParameter(
+            f"Golden set not found: {golden_path} (create one or pass --golden)"
+        )
+
+    golden_items = load_golden_set(golden_path)
+    if limit:
+        golden_items = golden_items[:limit]
+
+    bundle = load_book_index(settings, book_id)
+    variants = build_variants(
+        top_k_final=settings.retrieval.top_k_final,
+        rerank_pool=settings.retrieval.rerank_pool,
+        top_k_values=parse_top_k_values(top_k),
+        include_rerank=not no_rerank,
+    )
+    runs = build_ablation_runs(settings, bundle, variants)
+
+    index_metadata = (
+        read_json(paths.index_metadata) if paths.index_metadata.exists() else {}
+    )
+    with console.status("Running ablation..."):
+        report = run_ablation(
+            book_id,
+            golden_items,
+            runs,
+            index_identity={
+                "embedder": index_metadata.get("embedder"),
+                "contextual": index_metadata.get("contextual"),
+                "enriched_chunks": index_metadata.get("enriched_chunks"),
+            },
+        )
+
+    paths.eval_dir.mkdir(parents=True, exist_ok=True)
+    report_path = paths.eval_dir / "ablation.json"
+    write_json(report_path, report.model_dump())
+
+    if as_json:
+        typer.echo(report.model_dump_json(indent=2))
+        return
+    render_ablation(report)
     console.print(f"Report written to [cyan]{report_path}[/cyan]")
 
 
