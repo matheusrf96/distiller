@@ -16,3 +16,4 @@ Each folder contains:
 | Feature | Status | Summary |
 |---------|--------|---------|
 | [contextual-retrieval](contextual-retrieval/) | ✅ implemented | LLM-generated situating context per chunk for embedding/BM25 (Phase 1) |
+| [reranking-ablations](reranking-ablations/) | ✅ implemented | Compare retrieval configs (rerank on/off, top-k sweep) on one golden set (Phase 1) |
