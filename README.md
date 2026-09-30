@@ -61,6 +61,9 @@ uv run distiller ask the-adventures-of-sherlock-holmes "What colour was the towe
 cp examples/golden.example.yaml artifacts/<book-id>/golden.yaml
 uv run distiller eval the-adventures-of-sherlock-holmes --ragas
 
+# ...or compare retrieval configurations (rerank on/off, top-k sweep)
+uv run distiller ablation the-adventures-of-sherlock-holmes --top-k 4,8,12
+
 # List / inspect
 uv run distiller books
 uv run distiller info the-adventures-of-sherlock-holmes
