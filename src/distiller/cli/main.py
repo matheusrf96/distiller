@@ -10,13 +10,19 @@ import typer
 from rich.logging import RichHandler
 
 from ..config import Settings, load_settings
-from ..evaluation import ItemResult, evaluate_item, load_golden, run_ragas, summarize
-from ..indexing import build_index, list_books
-from ..ingest import ingest_book
+from ..evaluation import ItemResult, evaluate_item, run_ragas, summarize
+from ..indexing import list_books
 from ..ingest.common import render_book_markdown
 from ..paths import BookPaths
 from ..utils import read_json, write_json
-from .context import apply_overrides, build_pipeline, load_book_index
+from .context import (
+    apply_overrides,
+    build_index_or_fail,
+    build_pipeline,
+    ingest_or_fail,
+    load_book_index,
+    load_golden_set,
+)
 from .render import (
     console,
     render_answer,
@@ -93,7 +99,7 @@ def ingest(
         settings.ingest = apply_overrides(settings.ingest, pdf_backend=pdf_backend)
 
     with console.status(f"Parsing {source.name}..."):
-        book = ingest_book(source, settings=settings, title=title)
+        book = ingest_or_fail(source, settings=settings, title=title)
 
     paths = BookPaths.for_book(settings.artifacts_dir, book.book_id).ensure()
     write_json(paths.book_json, book.model_dump())
@@ -125,7 +131,7 @@ def index(
         f"Building index for '{book_id}' "
         f"with {settings.embedding.backend} embeddings..."
     ):
-        metadata = build_index(book_id, settings)
+        metadata = build_index_or_fail(book_id, settings)
     render_index(book_id, metadata)
 
 
@@ -200,7 +206,7 @@ def evaluate(
             f"Golden set not found: {golden_path} (create one or pass --golden)"
         )
 
-    golden_items = load_golden(golden_path)
+    golden_items = load_golden_set(golden_path)
     if limit:
         golden_items = golden_items[:limit]
 

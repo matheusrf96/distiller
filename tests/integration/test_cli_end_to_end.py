@@ -79,3 +79,32 @@ def test_full_offline_pipeline(
     # 5. listing and info
     assert BOOK_ID in invoke_cli(["books"]).output
     assert "The Lantern Keeper" in invoke_cli(["info", BOOK_ID]).output
+
+
+def test_cli_reports_domain_errors_without_tracebacks(
+    offline_env: Path,
+    tmp_path: Path,
+) -> None:
+    """Expected user errors are friendly messages, never raw tracebacks."""
+    unsupported = tmp_path / "bad.mobi"
+    unsupported.write_text("content", encoding="utf-8")
+
+    result = runner.invoke(app, ["ingest", str(unsupported)])
+    assert result.exit_code != 0
+    assert "Unsupported file type" in result.output
+    assert "Traceback" not in result.output
+
+    result = runner.invoke(app, ["index", "no-such-book"])
+    assert result.exit_code != 0
+    assert "No ingested book" in result.output
+    assert "Traceback" not in result.output
+
+    malformed_golden = tmp_path / "bad-golden.yaml"
+    malformed_golden.write_text(
+        "items:\n  - question: What?\n    unknown_field: oops\n",
+        encoding="utf-8",
+    )
+    result = runner.invoke(app, ["eval", BOOK_ID, "--golden", str(malformed_golden)])
+    assert result.exit_code != 0
+    assert "Invalid golden set" in result.output
+    assert "Traceback" not in result.output
