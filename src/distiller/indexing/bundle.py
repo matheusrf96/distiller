@@ -8,7 +8,9 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 from ..chunking import chunk_document
+from ..enrichment import ContextualEnricher
 from ..exceptions import BookNotFoundError, IndexBuildError, IndexNotFoundError
+from ..llm import get_llm
 from ..models import BookDocument, Chunk
 from ..paths import BookPaths
 from ..utils import read_json, read_jsonl, write_json, write_jsonl
@@ -59,7 +61,7 @@ def build_index(
 
     Args:
         book_id: Slug of a previously ingested book.
-        settings: Pipeline settings (chunking, embedding, store backend).
+        settings: Pipeline settings (chunking, enrichment, embedding, store backend).
         embedder: Optional pre-built embedder (used by tests to stay offline).
 
     Returns:
@@ -82,10 +84,20 @@ def build_index(
         raise IndexBuildError(
             f"Book '{book_id}' produced no chunks; check the parsed content."
         )
+
+    if settings.enrichment.enabled:
+        chunks = ContextualEnricher(
+            get_llm(settings),
+            book,
+            cache_path=paths.enrichment_jsonl,
+            max_document_chars=settings.enrichment.max_document_chars,
+            max_context_chars=settings.enrichment.max_context_chars,
+        ).enrich(chunks)
+
     write_jsonl(paths.chunks_jsonl, chunks)
 
     embedder = embedder or get_embedder(settings.embedding)
-    vectors = embedder.embed_documents([chunk.text for chunk in chunks])
+    vectors = embedder.embed_documents([chunk.index_text for chunk in chunks])
 
     store = create_store(paths.store_dir, embedder.dim, settings.store.backend)
     store.upsert(
@@ -112,6 +124,8 @@ def build_index(
         "average_chunk_chars": round(
             sum(chunk.char_count for chunk in chunks) / len(chunks)
         ),
+        "contextual": settings.enrichment.enabled,
+        "enriched_chunks": sum(1 for chunk in chunks if chunk.context),
         "chunking": settings.chunking.model_dump(),
     }
     write_json(paths.index_metadata, metadata)
@@ -174,7 +188,9 @@ def load_index(
             f"Re-run `distiller index {book_id}`."
         ) from exc
 
-    bm25 = BM25Index([chunk.id for chunk in chunks], [chunk.text for chunk in chunks])
+    bm25 = BM25Index(
+        [chunk.id for chunk in chunks], [chunk.index_text for chunk in chunks]
+    )
     return IndexBundle(
         book=book, chunks=chunks, store=store, bm25=bm25, embedder=embedder
     )
