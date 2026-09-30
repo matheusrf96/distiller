@@ -1,0 +1,24 @@
+# Golden question set for `distiller eval`.
+#
+# Copy to artifacts/<book-id>/golden.yaml (picked up automatically) or pass
+# with `distiller eval <book-id> --golden path/to/this.yaml`.
+#
+# Fields:
+#   question                 (required) the question to ask
+#   answerable               default true; false expects an honest refusal
+#   expected_chapters        chapter titles retrieval should surface
+#   expected_answer_contains snippets the answer should contain (case-insensitive)
+
+items:
+  - question: "How many steps did the keeper count?"
+    expected_chapters: ["Chapter One"]
+    expected_answer_contains: ["three hundred"]
+
+  - question: "What happened to the lantern during the storm?"
+    expected_chapters: ["Chapter Two"]
+    expected_answer_contains: ["cracked"]
+
+  # Unanswerable questions test that the model refuses instead of hallucinating.
+  - question: "Who won the village sailing race?"
+    answerable: false
+    notes: "The book never mentions a sailing race."
