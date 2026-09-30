@@ -2,16 +2,22 @@
 
 from __future__ import annotations
 
+from functools import partial
 from typing import TYPE_CHECKING, Any
 
 import typer
 from pydantic import BaseModel, ValidationError
 
-from ..evaluation import load_golden
+from ..evaluation import (
+    AblationRun,
+    AblationVariant,
+    load_golden,
+)
 from ..exceptions import DistillerError
 from ..indexing import IndexBundle, build_index, load_index
 from ..ingest import ingest_book
 from ..llm import get_llm
+from ..optional_deps import is_available
 from ..rag import Generator, QAPipeline, Retriever, get_reranker
 
 if TYPE_CHECKING:
@@ -152,6 +158,83 @@ def build_pipeline(
     return QAPipeline(
         retriever, generator, reranker=reranker, settings=settings.retrieval
     )
+
+
+def build_ablation_runs(
+    settings: Settings,
+    bundle: IndexBundle,
+    variants: list[AblationVariant],
+) -> list[AblationRun]:
+    """Pair each variant with an answering pipeline, skipping unavailable rerankers.
+
+    Args:
+        settings: Pipeline settings.
+        bundle: Loaded index, reused by every variant.
+        variants: Variants to run.
+
+    Returns:
+        Runs in input order; rerank variants are skipped (with an actionable
+        reason) when the ``embed`` extra is not installed.
+    """
+    runs: list[AblationRun] = []
+    for variant in variants:
+        if variant.rerank and not is_available("sentence_transformers"):
+            runs.append(
+                AblationRun(
+                    variant=variant,
+                    skipped_reason=(
+                        "reranking needs the 'embed' extra (uv sync --extra embed)"
+                    ),
+                )
+            )
+            continue
+
+        retrieval = apply_overrides(
+            settings.retrieval,
+            rerank=variant.rerank,
+            top_k_final=variant.top_k_final,
+            rerank_pool=variant.rerank_pool,
+        )
+        retriever = Retriever(bundle, retrieval)
+        generator = Generator(
+            get_llm(settings),
+            bundle.book.title,
+            max_tokens=settings.llm.max_tokens,
+        )
+        reranker = get_reranker(retrieval) if variant.rerank else None
+        pipeline = QAPipeline(
+            retriever, generator, reranker=reranker, settings=retrieval
+        )
+        runs.append(AblationRun(variant=variant, answer=partial(pipeline.ask)))
+    return runs
+
+
+def parse_top_k_values(raw: str | None) -> list[int] | None:
+    """Parse a comma-separated top-k sweep such as ``4,8,12``.
+
+    Args:
+        raw: Raw CLI value; None means "no sweep".
+
+    Returns:
+        Positive integers in input order, or None when no sweep was requested.
+
+    Raises:
+        typer.BadParameter: When the value is empty, malformed or non-positive.
+    """
+    if raw is None:
+        return None
+    parts = [part.strip() for part in raw.split(",") if part.strip()]
+    try:
+        values = [int(part) for part in parts]
+    except ValueError as exc:
+        raise typer.BadParameter(
+            f"Invalid --top-k value: {raw!r} (expected e.g. 4,8,12)"
+        ) from exc
+    if not values or any(value <= 0 for value in values):
+        raise typer.BadParameter(
+            f"Invalid --top-k value: {raw!r} (values must be positive)"
+        )
+    return values
 
 
 def _first_error(exc: ValidationError) -> str:
