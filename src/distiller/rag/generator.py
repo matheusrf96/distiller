@@ -73,13 +73,15 @@ class Generator:
             max_tokens=self.max_tokens,
         )
         text = text.strip()
+        citations = extract_citations(text, contexts)
         return Answer(
             question=question,
             text=text,
-            citations=extract_citations(text, contexts),
+            citations=citations,
             contexts=contexts,
             model=self.llm.name,
-            refused=is_refusal(text, self.book_title),
+            # A hedged answer that still cites the book is grounded, not a refusal.
+            refused=is_refusal(text, self.book_title) and not citations,
         )
 
 
@@ -112,7 +114,11 @@ def extract_citations(text: str, contexts: list[RetrievedChunk]) -> list[Citatio
 
 
 def is_refusal(text: str, book_title: str) -> bool:
-    """Detect the configured refusal sentence in an answer."""
+    """Detect refusal wording in an answer (text-only heuristic).
+
+    Callers combine this with citation presence: an answer that hedges but
+    cites the book is grounded, not a refusal.
+    """
     head = " ".join(text.split())[:200].lower()
     if _REFUSAL_MARK in head:
         return True

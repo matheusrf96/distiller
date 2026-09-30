@@ -78,6 +78,31 @@ def test_is_refusal_detection() -> None:
     assert not is_refusal("The lantern cracked [1].", "The Book")
 
 
+def test_generator_keeps_hedged_but_cited_answer_as_grounded() -> None:
+    """An answer that hedges but cites the book is grounded, not a refusal."""
+    hedged = FakeLLM(
+        response=(
+            "I couldn't find the exact wording, but the book says "
+            "the lantern cracked during the storm [1]."
+        )
+    )
+    generator = Generator(hedged, "The Lantern Keeper")
+    answer = generator.answer("What happened to the lantern?", build_contexts())
+
+    assert not answer.refused
+    assert answer.citations
+
+
+def test_generator_flags_hedged_answer_without_citation_as_refusal() -> None:
+    """Refusal wording without any citation still counts as a refusal."""
+    hedged = FakeLLM(response="I couldn't find that in The Lantern Keeper.")
+    generator = Generator(hedged, "The Lantern Keeper")
+    answer = generator.answer("Who won the race?", build_contexts())
+
+    assert answer.refused
+    assert answer.citations == []
+
+
 def test_citation_label_includes_location() -> None:
     """Citation labels combine chapter, section and page range."""
     context = RetrievedChunk(
