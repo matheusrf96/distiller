@@ -252,3 +252,77 @@ def test_ablation_command_runs_rerank_variants_with_sweep(
 
     json_result = invoke_cli([*arguments, "--json"])
     assert json.loads(json_result.output)["variants"] == payload["variants"]
+
+
+def test_synth_command_end_to_end(
+    offline_env: Path,
+    epub_factory: Callable[..., Path],
+    tmp_path: Path,
+) -> None:
+    """`synth` generates, filters, formats, reuses the cache and prints JSON.
+
+    Covers REQ-SQ-010, REQ-SQ-013 and REQ-SQ-014.
+    """
+    epub_path = epub_factory(tmp_path / "lantern.epub")
+    invoke_cli(["ingest", str(epub_path)])
+    invoke_cli(["index", BOOK_ID])
+
+    result = invoke_cli(
+        [
+            "synth",
+            BOOK_ID,
+            "--questions-per-chunk",
+            "2",
+            "--distractors",
+            "1",
+            "--seed",
+            "5",
+        ]
+    )
+    assert "Synthesized" in result.output
+
+    dataset = offline_env / BOOK_ID / "dataset"
+    manifest = json.loads((dataset / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["source"] == "generated"
+    assert manifest["sampled_chunks"] == 3
+    assert manifest["generated_pairs"] == 6
+    assert manifest["kept_pairs"] == 6
+    assert manifest["rejected"] == {}
+    assert manifest["example_count"] == 6
+    assert (
+        manifest["answerable_examples"] + manifest["unanswerable_examples"]
+        == manifest["example_count"]
+    )
+
+    qa_rows = (dataset / "qa.jsonl").read_text(encoding="utf-8").strip().splitlines()
+    raft_rows = (
+        (dataset / "raft.jsonl").read_text(encoding="utf-8").strip().splitlines()
+    )
+    assert len(qa_rows) == 6
+    assert len(raft_rows) == manifest["example_count"]
+
+    # a second run reuses the cached pairs instead of calling the LLM
+    invoke_cli(["synth", BOOK_ID])
+    cached = json.loads((dataset / "manifest.json").read_text(encoding="utf-8"))
+    assert cached["source"] == "cache"
+    assert cached["generated_pairs"] == 6
+
+    payload = json.loads(invoke_cli(["synth", BOOK_ID, "--json"]).output)
+    assert payload["book_id"] == BOOK_ID
+    assert payload["source"] == "cache"
+
+
+def test_synth_requires_an_index(
+    offline_env: Path,
+    epub_factory: Callable[..., Path],
+    tmp_path: Path,
+) -> None:
+    """An unindexed book fails with an actionable message (REQ-SQ-015)."""
+    epub_path = epub_factory(tmp_path / "lantern.epub")
+    invoke_cli(["ingest", str(epub_path)])
+
+    result = runner.invoke(app, ["synth", BOOK_ID])
+
+    assert result.exit_code != 0
+    assert "distiller index" in result.output
+    assert "Traceback" not in result.output

@@ -17,15 +17,17 @@ from ..exceptions import DistillerError
 from ..indexing import IndexBundle, build_index, load_index
 from ..ingest import ingest_book
 from ..llm import get_llm
+from ..models import BookDocument, Chunk
 from ..optional_deps import is_available
+from ..paths import BookPaths
 from ..rag import Generator, QAPipeline, Retriever, get_reranker
+from ..utils import read_json, read_jsonl
 
 if TYPE_CHECKING:
     from pathlib import Path
 
     from ..config import Settings
     from ..evaluation import GoldenItem
-    from ..models import BookDocument
 
 
 def apply_overrides[ModelT: BaseModel](model: ModelT, **changes: Any) -> ModelT:
@@ -158,6 +160,44 @@ def build_pipeline(
     return QAPipeline(
         retriever, generator, reranker=reranker, settings=settings.retrieval
     )
+
+
+def load_book_and_chunks(
+    settings: Settings, book_id: str
+) -> tuple[BookDocument, list[Chunk]]:
+    """Load the parsed book and its indexed chunks (no embedder needed).
+
+    Synthesis works from `chunks.jsonl`, so it runs on a plain install and is
+    unaffected by embedder choices.
+
+    Args:
+        settings: Pipeline settings.
+        book_id: Slug of the book.
+
+    Returns:
+        The parsed book and all of its chunks.
+
+    Raises:
+        typer.BadParameter: When the book was never ingested or indexed, or the
+            artifacts are unreadable.
+    """
+    paths = BookPaths.for_book(settings.artifacts_dir, book_id)
+    if not paths.book_json.exists():
+        raise typer.BadParameter(
+            f"No ingested book for id '{book_id}'. Run `distiller ingest` first."
+        )
+    if not paths.chunks_jsonl.exists():
+        raise typer.BadParameter(
+            f"No chunks for book '{book_id}'. Run `distiller index {book_id}` first."
+        )
+    try:
+        book = BookDocument.model_validate(read_json(paths.book_json))
+        chunks = [Chunk.model_validate(row) for row in read_jsonl(paths.chunks_jsonl)]
+    except (OSError, ValueError) as exc:
+        raise typer.BadParameter(
+            f"Artifacts for '{book_id}' are incomplete or corrupt: {exc}"
+        ) from exc
+    return book, chunks
 
 
 def build_ablation_runs(

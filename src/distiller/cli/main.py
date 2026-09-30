@@ -20,14 +20,17 @@ from ..evaluation import (
 )
 from ..indexing import list_books
 from ..ingest.common import render_book_markdown
+from ..llm import get_llm
 from ..paths import BookPaths
-from ..utils import read_json, write_json
+from ..synthesis import load_cached_pairs, synthesize
+from ..utils import read_json, write_json, write_jsonl
 from .context import (
     apply_overrides,
     build_ablation_runs,
     build_index_or_fail,
     build_pipeline,
     ingest_or_fail,
+    load_book_and_chunks,
     load_book_index,
     load_golden_set,
     parse_top_k_values,
@@ -42,6 +45,7 @@ from .render import (
     render_info,
     render_ingest,
     render_ragas,
+    render_synthesis,
 )
 
 if TYPE_CHECKING:
@@ -339,6 +343,93 @@ def ablation(
         return
     render_ablation(report)
     console.print(f"Report written to [cyan]{report_path}[/cyan]")
+
+
+@app.command("synth")
+def synth(
+    ctx: typer.Context,
+    book_id: Annotated[str, typer.Argument(help="Book id.")],
+    max_chunks: Annotated[
+        int | None,
+        typer.Option("--max-chunks", help="Maximum chunks sampled for generation."),
+    ] = None,
+    questions_per_chunk: Annotated[
+        int | None,
+        typer.Option("--questions-per-chunk", help="Questions requested per chunk."),
+    ] = None,
+    distractors: Annotated[
+        int | None,
+        typer.Option("--distractors", help="Distractor chunks per RAFT example."),
+    ] = None,
+    negative_ratio: Annotated[
+        float | None,
+        typer.Option(
+            "--negative-ratio",
+            help="Fraction of examples that are unanswerable negatives.",
+        ),
+    ] = None,
+    seed: Annotated[
+        int | None,
+        typer.Option("--seed", help="Random seed for sampling and shuffling."),
+    ] = None,
+    regenerate: Annotated[
+        bool,
+        typer.Option(
+            "--regenerate", help="Ignore cached qa.jsonl and call the LLM again."
+        ),
+    ] = False,
+    as_json: Annotated[
+        bool, typer.Option("--json", help="Print the manifest as JSON.")
+    ] = False,
+) -> None:
+    """Generate grounded QA pairs and RAFT training examples for a book."""
+    settings = settings_from_context(ctx)
+    overrides: dict[str, Any] = {
+        key: value
+        for key, value in {
+            "max_chunks": max_chunks,
+            "questions_per_chunk": questions_per_chunk,
+            "distractors": distractors,
+            "negative_ratio": negative_ratio,
+            "seed": seed,
+        }.items()
+        if value is not None
+    }
+    if overrides:
+        settings.synthesis = apply_overrides(settings.synthesis, **overrides)
+
+    paths = BookPaths.for_book(settings.artifacts_dir, book_id)
+    book, chunks = load_book_and_chunks(settings, book_id)
+    index_metadata = (
+        read_json(paths.index_metadata) if paths.index_metadata.exists() else {}
+    )
+
+    cached_pairs = None if regenerate else load_cached_pairs(paths.dataset_qa_jsonl)
+    with console.status("Synthesizing dataset..."):
+        run = synthesize(
+            book,
+            chunks,
+            get_llm(settings),
+            settings.synthesis,
+            index_identity={
+                "embedder": index_metadata.get("embedder"),
+                "contextual": index_metadata.get("contextual"),
+                "enriched_chunks": index_metadata.get("enriched_chunks"),
+            },
+            cached_pairs=cached_pairs,
+        )
+
+    paths.dataset_dir.mkdir(parents=True, exist_ok=True)
+    write_jsonl(paths.dataset_qa_jsonl, run.pairs)
+    write_jsonl(paths.dataset_rejected_jsonl, run.outcome.rejected)
+    write_jsonl(paths.dataset_raft_jsonl, run.examples)
+    write_json(paths.dataset_manifest, run.manifest.model_dump())
+
+    if as_json:
+        typer.echo(run.manifest.model_dump_json(indent=2))
+        return
+    render_synthesis(run.manifest, paths.dataset_dir)
+    console.print(f"Dataset written to [cyan]{paths.dataset_dir}[/cyan]")
 
 
 @app.command("books")

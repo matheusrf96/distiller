@@ -16,6 +16,7 @@ if TYPE_CHECKING:
 
     from ..evaluation import AblationReport
     from ..models import Answer, BookDocument
+    from ..synthesis import DatasetManifest
 
 console = Console()
 
@@ -152,6 +153,28 @@ def _format_delta(value: float | None) -> str:
     if value == 0:
         return "0"
     return f"{value:+.4f}"
+
+
+def render_synthesis(manifest: DatasetManifest, dataset_dir: Path) -> None:
+    """Render the synth summary table shown after `distiller synth`."""
+    rejected_total = sum(manifest.rejected.values())
+    summary_table(
+        f"Synthesized: {manifest.book_id}",
+        [
+            ("model", manifest.model),
+            ("source", manifest.source),
+            ("chunks sampled", f"{manifest.sampled_chunks} of {manifest.chunk_count}"),
+            ("pairs generated", str(manifest.generated_pairs)),
+            ("pairs kept", str(manifest.kept_pairs)),
+            ("pairs rejected", str(rejected_total)),
+            ("raft examples", str(manifest.example_count)),
+            (
+                "answerable / negative",
+                f"{manifest.answerable_examples} / {manifest.unanswerable_examples}",
+            ),
+            ("dataset", str(dataset_dir)),
+        ],
+    )
 
 
 def render_books(rows: list[dict[str, Any]]) -> None:
