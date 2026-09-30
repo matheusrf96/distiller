@@ -14,7 +14,7 @@ RAFT-style fine-tuning.
 - **Stack**: Python 3.12+, pydantic/pydantic-settings, Typer CLI, NumPy/Qdrant,
   sentence-transformers (optional), ruff + mypy(strict) + pytest.
 - **Status**: v1 complete (ingest → chunk → hybrid index → cited answers → eval),
-  fully offline test suite (22+ tests, hash embedder + fake LLM).
+  fully offline test suite (79 tests, hash embedder + fake LLM).
 
 ---
 
