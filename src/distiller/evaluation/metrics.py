@@ -12,6 +12,8 @@ from pydantic import Field, computed_field
 from ..models import DomainModel
 
 if TYPE_CHECKING:
+    from collections.abc import Iterable
+
     from ..models import Answer
     from .golden import GoldenItem
 
@@ -157,6 +159,40 @@ def summarize(results: list[ItemResult]) -> dict[str, Any]:
             [float(result.citation_count) for result in answered]
         ),
     }
+
+
+def metric_deltas_against(
+    baseline: dict[str, Any],
+    rows: Iterable[tuple[str, dict[str, Any]]],
+    metrics: tuple[str, ...],
+) -> dict[str, dict[str, float | None]]:
+    """Per-row deltas of selected metrics versus a baseline metric dict.
+
+    Shared by the retrieval ablation and the base-vs-adapter comparison so both
+    reports use identical delta semantics.
+
+    Args:
+        baseline: Metric dictionary of the reference variant.
+        rows: ``(name, metrics)`` pairs to diff, in report order.
+        metrics: Metric names to diff (keys of :func:`summarize` output).
+
+    Returns:
+        Mapping name -> metric -> delta versus the baseline. A delta is None
+        when either side is missing.
+    """
+    deltas: dict[str, dict[str, float | None]] = {}
+    for name, values in rows:
+        row: dict[str, float | None] = {}
+        for metric in metrics:
+            base_value = baseline.get(metric)
+            value = values.get(metric)
+            row[metric] = (
+                None
+                if base_value is None or value is None
+                else round(float(value) - float(base_value), 4)
+            )
+        deltas[name] = row
+    return deltas
 
 
 def _mean(values: list[float]) -> float | None:

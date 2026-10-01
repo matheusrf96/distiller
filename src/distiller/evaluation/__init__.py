@@ -8,7 +8,13 @@ from .ablation import (
     run_ablation,
 )
 from .golden import GoldenItem, load_golden, save_golden
-from .metrics import ItemResult, evaluate_item, retrieval_hit, summarize
+from .metrics import (
+    ItemResult,
+    evaluate_item,
+    metric_deltas_against,
+    retrieval_hit,
+    summarize,
+)
 from .ragas_runner import ragas_available, run_ragas
 
 __all__ = [
@@ -22,6 +28,7 @@ __all__ = [
     "evaluate_item",
     "load_golden",
     "metric_deltas",
+    "metric_deltas_against",
     "ragas_available",
     "retrieval_hit",
     "run_ablation",

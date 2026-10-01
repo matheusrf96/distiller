@@ -9,7 +9,12 @@ from typing import TYPE_CHECKING, Any
 from pydantic import Field
 
 from ..models import DomainModel
-from .metrics import ItemResult, evaluate_item, summarize
+from .metrics import (
+    ItemResult,
+    evaluate_item,
+    metric_deltas_against,
+    summarize,
+)
 
 if TYPE_CHECKING:
     from ..models import Answer
@@ -206,19 +211,12 @@ def metric_deltas(
     )
     if baseline is None:
         return {}
-
-    deltas: dict[str, dict[str, float | None]] = {}
-    for result in report.variants:
-        if result.skipped_reason is not None:
-            continue
-        row: dict[str, float | None] = {}
-        for metric in metrics:
-            base_value = baseline.metrics.get(metric)
-            value = result.metrics.get(metric)
-            row[metric] = (
-                None
-                if base_value is None or value is None
-                else round(float(value) - float(base_value), 4)
-            )
-        deltas[result.variant.name] = row
-    return deltas
+    return metric_deltas_against(
+        baseline.metrics,
+        (
+            (result.variant.name, result.metrics)
+            for result in report.variants
+            if result.skipped_reason is None
+        ),
+        metrics,
+    )
