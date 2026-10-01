@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
+import socket
+import sys
 from typing import TYPE_CHECKING
 
 import pytest
@@ -16,6 +19,8 @@ from distiller.training.qlora import TRAINING_MODULES
 if TYPE_CHECKING:
     from collections.abc import Callable
     from pathlib import Path
+
+    GgufFactory = Callable[..., Path]
 
 runner = CliRunner()
 BOOK_ID = "the-lantern-keeper"
@@ -640,7 +645,12 @@ def test_eval_records_generator_identity(
     report = json.loads(
         (offline_env / BOOK_ID / "eval" / "report.json").read_text(encoding="utf-8")
     )
-    assert report["generator"] == {"kind": "base", "model": "fake", "adapter": None}
+    assert report["generator"] == {
+        "kind": "base",
+        "model": "fake",
+        "adapter": None,
+        "gguf": None,
+    }
     assert report["model"] == report["generator"]["model"] == "fake"
 
 
@@ -717,3 +727,326 @@ def test_training_pipeline_end_to_end(
     assert report["item_count"] == 2
     assert report["deltas"]["adapter"]["contains_rate"] == 0.0
     assert manifest["unanswerable_count"] >= 1
+
+
+def _register_fake_gguf(
+    offline_env: Path,
+    tmp_path: Path,
+    gguf_factory: GgufFactory,
+    *,
+    name: str = "lantern-q4_k_m.gguf",
+) -> dict:
+    """Register a synthetic GGUF for the fixture book; return the report."""
+    source = gguf_factory(tmp_path / name)
+    invoke_cli(["gguf", "register", BOOK_ID, str(source)])
+    return json.loads(
+        (offline_env / BOOK_ID / "training" / "gguf" / "gguf.json").read_text(
+            encoding="utf-8"
+        )
+    )
+
+
+def _closed_local_port() -> int:
+    """Bind then close a localhost port, returning an unreachable port number."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        return int(probe.getsockname()[1])
+
+
+def test_gguf_register_command_end_to_end(
+    offline_env: Path,
+    epub_factory: Callable[..., Path],
+    tmp_path: Path,
+    gguf_factory: GgufFactory,
+) -> None:
+    """`gguf register` validates, copies, reports and prints; --json matches (AC3)."""
+    epub_path = epub_factory(tmp_path / "lantern.epub")
+    invoke_cli(["ingest", str(epub_path)])
+
+    source = gguf_factory(tmp_path / "lantern-q4_k_m.gguf")
+    result = invoke_cli(["gguf", "register", BOOK_ID, str(source)])
+    output = flat_output(result)
+    assert "Q4_K_M" in output
+    assert f"distiller-{BOOK_ID}" in output
+
+    gguf_dir = offline_env / BOOK_ID / "training" / "gguf"
+    model_file = gguf_dir / "model.gguf"
+    assert model_file.read_bytes() == source.read_bytes()
+
+    report = json.loads((gguf_dir / "gguf.json").read_text(encoding="utf-8"))
+    assert report["sha256"] == hashlib.sha256(model_file.read_bytes()).hexdigest()
+    assert report["size_bytes"] == model_file.stat().st_size
+    assert report["metadata"]["quantization"] == "Q4_K_M"
+    assert report["source_file"] == "lantern-q4_k_m.gguf"
+    assert (gguf_dir / "Modelfile").exists()
+    assert (gguf_dir / "serve.sh").exists()
+
+    json_result = invoke_cli(["gguf", "register", BOOK_ID, str(source), "--json"])
+    assert json.loads(json_result.output) == json.loads(
+        (gguf_dir / "gguf.json").read_text(encoding="utf-8")
+    )
+
+    replacement = gguf_factory(tmp_path / "second.gguf", tensors=[("a.weight", (2, 2))])
+    invoke_cli(["gguf", "register", BOOK_ID, str(replacement)])
+    updated = json.loads((gguf_dir / "gguf.json").read_text(encoding="utf-8"))
+    assert updated["sha256"] != report["sha256"]
+    assert model_file.read_bytes() == replacement.read_bytes()
+
+
+def test_gguf_register_requires_an_ingested_book(
+    offline_env: Path,
+    tmp_path: Path,
+    gguf_factory: GgufFactory,
+) -> None:
+    """An unknown book is rejected actionably and nothing is copied (AC4)."""
+    source = gguf_factory(tmp_path / "model.gguf")
+
+    result = runner.invoke(app, ["gguf", "register", "no-such-book", str(source)])
+
+    assert result.exit_code != 0
+    assert "distiller ingest" in flat_output(result)
+    assert "Traceback" not in result.output
+    assert not (offline_env / "no-such-book").exists()
+
+
+def test_ask_and_eval_select_a_registered_gguf(
+    offline_env: Path,
+    epub_factory: Callable[..., Path],
+    tmp_path: Path,
+    gguf_factory: GgufFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`--gguf` answers and evaluates through the registered local model (AC5)."""
+    epub_path = epub_factory(tmp_path / "lantern.epub")
+    invoke_cli(["ingest", str(epub_path)])
+    invoke_cli(["index", BOOK_ID])
+    report = _register_fake_gguf(offline_env, tmp_path, gguf_factory)
+    monkeypatch.setenv("DISTILLER_GGUF__MODEL", "fake")
+
+    result = invoke_cli(["ask", BOOK_ID, "What happened to the lantern?", "--gguf"])
+    assert "Chapter" in result.output
+
+    golden_path = _write_training_golden(tmp_path)
+    invoke_cli(["eval", BOOK_ID, "--golden", str(golden_path), "--gguf"])
+
+    written = json.loads(
+        (offline_env / BOOK_ID / "eval" / "report.json").read_text(encoding="utf-8")
+    )
+    assert written["generator"]["kind"] == "gguf"
+    assert written["generator"]["gguf"]["sha256"] == report["sha256"]
+
+
+def test_ask_and_eval_require_a_registered_gguf(
+    offline_env: Path,
+    epub_factory: Callable[..., Path],
+    tmp_path: Path,
+    gguf_factory: GgufFactory,
+) -> None:
+    """Missing registration/endpoint fail actionably with no traceback (AC5/AC14)."""
+    epub_path = epub_factory(tmp_path / "lantern.epub")
+    invoke_cli(["ingest", str(epub_path)])
+    invoke_cli(["index", BOOK_ID])
+    golden_path = _write_training_golden(tmp_path)
+
+    result = runner.invoke(
+        app, ["ask", BOOK_ID, "What happened?", "--adapter", "--gguf"]
+    )
+    assert result.exit_code != 0
+    assert "not both" in flat_output(result)
+    assert "Traceback" not in result.output
+
+    result = runner.invoke(
+        app, ["eval", BOOK_ID, "--golden", str(golden_path), "--adapter", "--gguf"]
+    )
+    assert result.exit_code != 0
+    assert "not both" in flat_output(result)
+    assert "Traceback" not in result.output
+
+    result = runner.invoke(app, ["ask", BOOK_ID, "What happened?", "--gguf"])
+    assert result.exit_code != 0
+    assert "distiller gguf register" in flat_output(result)
+    assert "Traceback" not in result.output
+
+    result = runner.invoke(
+        app, ["eval", BOOK_ID, "--golden", str(golden_path), "--gguf"]
+    )
+    assert result.exit_code != 0
+    assert "distiller gguf register" in flat_output(result)
+    assert "Traceback" not in result.output
+
+    # with a registration but no endpoint, the configuration hint is shown
+    _register_fake_gguf(offline_env, tmp_path, gguf_factory)
+
+    result = runner.invoke(app, ["ask", BOOK_ID, "What happened?", "--gguf"])
+    assert result.exit_code != 0
+    assert "DISTILLER_GGUF__BASE_URL" in flat_output(result)
+    assert "Traceback" not in result.output
+
+
+def test_eval_records_the_gguf_generator_identity(
+    offline_env: Path,
+    epub_factory: Callable[..., Path],
+    tmp_path: Path,
+    gguf_factory: GgufFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A --gguf eval records kind gguf and the registered file identity (AC6)."""
+    epub_path = epub_factory(tmp_path / "lantern.epub")
+    invoke_cli(["ingest", str(epub_path)])
+    invoke_cli(["index", BOOK_ID])
+    golden_path = _write_training_golden(tmp_path)
+
+    invoke_cli(["eval", BOOK_ID, "--golden", str(golden_path)])
+    base_report = json.loads(
+        (offline_env / BOOK_ID / "eval" / "report.json").read_text(encoding="utf-8")
+    )
+    assert base_report["generator"]["kind"] == "base"
+    assert base_report["generator"]["gguf"] is None
+
+    report = _register_fake_gguf(offline_env, tmp_path, gguf_factory)
+    monkeypatch.setenv("DISTILLER_GGUF__MODEL", "fake")
+    invoke_cli(["eval", BOOK_ID, "--golden", str(golden_path), "--gguf"])
+
+    written = json.loads(
+        (offline_env / BOOK_ID / "eval" / "report.json").read_text(encoding="utf-8")
+    )
+    assert written["generator"]["kind"] == "gguf"
+    assert written["generator"]["gguf"]["sha256"] == report["sha256"]
+    assert written["generator"]["gguf"]["quantization"] == "Q4_K_M"
+    assert written["generator"]["gguf"]["architecture"] == "qwen3"
+    assert written["generator"]["gguf"]["model_name"] == f"distiller-{BOOK_ID}"
+
+
+def test_gguf_serve_prints_commands_without_launching(
+    offline_env: Path,
+    epub_factory: Callable[..., Path],
+    tmp_path: Path,
+    gguf_factory: GgufFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`gguf serve` prints paths and commands and launches nothing (AC9)."""
+    epub_path = epub_factory(tmp_path / "lantern.epub")
+    invoke_cli(["ingest", str(epub_path)])
+    _register_fake_gguf(offline_env, tmp_path, gguf_factory)
+
+    monkeypatch.setattr(
+        "subprocess.run",
+        lambda *args, **kwargs: pytest.fail("gguf serve must not launch processes"),
+    )
+    result = invoke_cli(["gguf", "serve", BOOK_ID])
+    output = flat_output(result)
+
+    gguf_dir = offline_env / BOOK_ID / "training" / "gguf"
+    assert str(gguf_dir / "model.gguf") in output
+    assert str(gguf_dir / "Modelfile") in output
+    assert "ollama create" in output
+    assert "ollama run" in output
+    assert "llama-server" in output
+    assert "-ngl 20" in output
+    assert "http://localhost:8080/v1" in output
+
+
+def test_train_eval_with_gguf_command_end_to_end(
+    offline_env: Path,
+    epub_factory: Callable[..., Path],
+    tmp_path: Path,
+    adapter_factory: Callable[..., Path],
+    gguf_factory: GgufFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`train-eval --gguf` adds the third variant with deltas (AC10)."""
+    _prepare_training_inputs(epub_factory, tmp_path)
+    invoke_cli(["train", BOOK_ID, "--seed", "5", "--val-ratio", "0.34"])
+    _register_fake_adapter(offline_env, tmp_path, adapter_factory, monkeypatch)
+    gguf_report = _register_fake_gguf(offline_env, tmp_path, gguf_factory)
+    monkeypatch.setenv("DISTILLER_GGUF__MODEL", "fake")
+    golden_path = _write_training_golden(tmp_path)
+
+    result = invoke_cli(["train-eval", BOOK_ID, "--golden", str(golden_path), "--gguf"])
+    assert "Δ contains" in flat_output(result)
+
+    report = json.loads(
+        (offline_env / BOOK_ID / "eval" / "training.json").read_text(encoding="utf-8")
+    )
+    assert report["baseline"] == "base"
+    assert [variant["variant"]["name"] for variant in report["variants"]] == [
+        "base",
+        "adapter",
+        "gguf",
+    ]
+    assert all(variant["skipped_reason"] is None for variant in report["variants"])
+    assert all(variant["metrics"]["item_count"] == 2 for variant in report["variants"])
+    assert report["index"]["embedder"] == "hash:512"
+    assert report["retrieval"]["top_k_final"] == 8
+    assert report["variants"][2]["variant"]["gguf"]["sha256"] == gguf_report["sha256"]
+    assert report["variants"][2]["variant"]["gguf"]["quantization"] == "Q4_K_M"
+    assert "gguf" in report["deltas"]
+
+    json_result = invoke_cli(
+        ["train-eval", BOOK_ID, "--golden", str(golden_path), "--gguf", "--json"]
+    )
+    assert json.loads(json_result.output) == report
+
+
+def test_gguf_serving_pipeline_end_to_end(
+    offline_env: Path,
+    epub_factory: Callable[..., Path],
+    tmp_path: Path,
+    gguf_factory: GgufFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The offline chain ingest -> ... -> eval --gguf needs no GPU or server (AC13)."""
+    _prepare_training_inputs(epub_factory, tmp_path)
+    invoke_cli(["train", BOOK_ID])
+    report = _register_fake_gguf(offline_env, tmp_path, gguf_factory)
+    monkeypatch.setenv("DISTILLER_GGUF__MODEL", "fake")
+    golden_path = _write_training_golden(tmp_path)
+
+    invoke_cli(["eval", BOOK_ID, "--golden", str(golden_path), "--gguf"])
+
+    written = json.loads(
+        (offline_env / BOOK_ID / "eval" / "report.json").read_text(encoding="utf-8")
+    )
+    assert written["generator"]["kind"] == "gguf"
+    assert written["generator"]["gguf"]["sha256"] == report["sha256"]
+    assert written["metrics"]["item_count"] == 2
+    # the GGUF feature pulls in no third-party GGUF/llama library
+    assert "gguf" not in sys.modules
+    assert "llama_cpp" not in sys.modules
+
+
+def test_gguf_commands_report_errors_without_tracebacks(
+    offline_env: Path,
+    epub_factory: Callable[..., Path],
+    tmp_path: Path,
+    gguf_factory: GgufFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Missing book/registration and unreachable endpoint fail friendly (AC14)."""
+    source = gguf_factory(tmp_path / "model.gguf")
+
+    result = runner.invoke(app, ["gguf", "register", "no-such-book", str(source)])
+    assert result.exit_code != 0
+    assert "distiller ingest" in flat_output(result)
+    assert "Traceback" not in result.output
+
+    result = runner.invoke(app, ["gguf", "serve", "no-such-book"])
+    assert result.exit_code != 0
+    assert "distiller gguf register" in flat_output(result)
+    assert "Traceback" not in result.output
+
+    epub_path = epub_factory(tmp_path / "lantern.epub")
+    invoke_cli(["ingest", str(epub_path)])
+    invoke_cli(["index", BOOK_ID])
+    _register_fake_gguf(offline_env, tmp_path, gguf_factory)
+    golden_path = _write_training_golden(tmp_path)
+
+    monkeypatch.setenv(
+        "DISTILLER_GGUF__BASE_URL", f"http://127.0.0.1:{_closed_local_port()}/v1"
+    )
+    result = runner.invoke(
+        app, ["eval", BOOK_ID, "--golden", str(golden_path), "--gguf"]
+    )
+    assert result.exit_code != 0
+    assert "ollama serve" in flat_output(result)
+    assert "Traceback" not in result.output

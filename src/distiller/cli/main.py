@@ -18,6 +18,7 @@ from ..evaluation import (
     run_ragas,
     summarize,
 )
+from ..exceptions import DistillerError
 from ..indexing import list_books
 from ..ingest.common import render_book_markdown
 from ..llm import get_llm
@@ -34,16 +35,20 @@ from .context import (
     build_pipeline,
     build_training_runs,
     check_training_runtime_or_fail,
+    gguf_identity,
+    gguf_llm_or_fail,
     ingest_or_fail,
     load_book_and_chunks,
     load_book_index,
     load_golden_set,
     load_registered_adapter_or_fail,
+    load_registered_gguf_or_fail,
     load_training_examples,
     parse_top_k_values,
     pipeline_model_name,
     prepare_training_or_fail,
     register_adapter_or_fail,
+    register_gguf_or_fail,
 )
 from .render import (
     console,
@@ -52,6 +57,8 @@ from .render import (
     render_books,
     render_comparison,
     render_eval,
+    render_gguf_registration,
+    render_gguf_serving,
     render_index,
     render_info,
     render_ingest,
@@ -64,6 +71,7 @@ from .render import (
 
 if TYPE_CHECKING:
     from ..evaluation import GoldenItem
+    from ..llm import LLMClient
     from ..rag import QAPipeline
 
 app = typer.Typer(
@@ -198,6 +206,10 @@ def ask(
         bool,
         typer.Option("--adapter", help="Answer with the registered adapter endpoint."),
     ] = False,
+    gguf: Annotated[
+        bool,
+        typer.Option("--gguf", help="Answer with the registered GGUF endpoint."),
+    ] = False,
     as_json: Annotated[
         bool,
         typer.Option("--json", help="Print the full Answer object as JSON."),
@@ -205,16 +217,26 @@ def ask(
 ) -> None:
     """Ask a question about an indexed book; answers carry citations."""
     settings = settings_from_context(ctx)
+    if adapter and gguf:
+        raise typer.BadParameter("Choose one generator: --adapter or --gguf, not both.")
     bundle = load_book_index(settings, book_id)
 
     llm = None
     if adapter:
         load_registered_adapter_or_fail(settings, book_id)
         llm = adapter_llm_or_fail(settings)
+    elif gguf:
+        gguf_report, _ = load_registered_gguf_or_fail(settings, book_id)
+        llm = gguf_llm_or_fail(settings, gguf_report)
     pipeline = build_pipeline(settings, bundle, rerank=rerank, llm=llm)
 
-    with console.status("Thinking..."):
-        answer = pipeline.ask(" ".join(question).strip(), chapter=chapter, top_k=top_k)
+    try:
+        with console.status("Thinking..."):
+            answer = pipeline.ask(
+                " ".join(question).strip(), chapter=chapter, top_k=top_k
+            )
+    except DistillerError as exc:
+        raise typer.BadParameter(str(exc)) from exc
 
     if as_json:
         typer.echo(answer.model_dump_json(indent=2))
@@ -242,6 +264,10 @@ def evaluate(
             "--adapter", help="Evaluate with the registered adapter endpoint."
         ),
     ] = False,
+    gguf: Annotated[
+        bool,
+        typer.Option("--gguf", help="Evaluate with the registered GGUF endpoint."),
+    ] = False,
     with_ragas: Annotated[
         bool,
         typer.Option(
@@ -251,6 +277,8 @@ def evaluate(
 ) -> None:
     """Run the golden question set and write eval/report.json."""
     settings = settings_from_context(ctx)
+    if adapter and gguf:
+        raise typer.BadParameter("Choose one generator: --adapter or --gguf, not both.")
     paths = BookPaths.for_book(settings.artifacts_dir, book_id)
     golden_path = golden or paths.golden_yaml
     if not golden_path.exists():
@@ -265,23 +293,35 @@ def evaluate(
     bundle = load_book_index(settings, book_id)
 
     adapter_provenance: dict[str, Any] | None = None
+    gguf_provenance: dict[str, Any] | None = None
     if adapter:
         adapter_report, adapter_dir = load_registered_adapter_or_fail(settings, book_id)
         adapter_provenance = adapter_identity(adapter_report, adapter_dir)
         pipeline = build_pipeline(settings, bundle, llm=adapter_llm_or_fail(settings))
+    elif gguf:
+        gguf_report, gguf_dir = load_registered_gguf_or_fail(settings, book_id)
+        gguf_provenance = gguf_identity(gguf_report, gguf_dir)
+        pipeline = build_pipeline(
+            settings, bundle, llm=gguf_llm_or_fail(settings, gguf_report)
+        )
     else:
         pipeline = build_pipeline(settings, bundle)
 
-    results, samples = run_golden_set(pipeline, golden_items)
+    try:
+        results, samples = run_golden_set(pipeline, golden_items)
+    except DistillerError as exc:
+        raise typer.BadParameter(str(exc)) from exc
 
     index_metadata = (
         read_json(paths.index_metadata) if paths.index_metadata.exists() else {}
     )
 
+    kind = "adapter" if adapter else "gguf" if gguf else "base"
     generator: dict[str, Any] = {
-        "kind": "adapter" if adapter else "base",
+        "kind": kind,
         "model": pipeline_model_name(pipeline),
         "adapter": adapter_provenance,
+        "gguf": gguf_provenance,
     }
     report: dict[str, Any] = {
         "book_id": book_id,
@@ -556,11 +596,15 @@ def train_eval(
         int | None,
         typer.Option("--limit", help="Evaluate only the first N questions."),
     ] = None,
+    gguf: Annotated[
+        bool,
+        typer.Option("--gguf", help="Also compare the registered GGUF export."),
+    ] = False,
     as_json: Annotated[
         bool, typer.Option("--json", help="Print the full report as JSON.")
     ] = False,
 ) -> None:
-    """Compare the base model and the registered adapter on one golden set."""
+    """Compare the base model, the registered adapter and the GGUF export."""
     settings = settings_from_context(ctx)
     paths = BookPaths.for_book(settings.artifacts_dir, book_id)
     golden_path = golden or paths.golden_yaml
@@ -576,11 +620,19 @@ def train_eval(
     adapter_report, adapter_dir = load_registered_adapter_or_fail(settings, book_id)
     adapter_llm = adapter_llm_or_fail(settings)
     bundle = load_book_index(settings, book_id)
+    gguf_llm: LLMClient | None = None
+    gguf_provenance: dict[str, Any] | None = None
+    if gguf:
+        gguf_report, gguf_dir = load_registered_gguf_or_fail(settings, book_id)
+        gguf_llm = gguf_llm_or_fail(settings, gguf_report)
+        gguf_provenance = gguf_identity(gguf_report, gguf_dir)
     runs = build_training_runs(
         settings,
         bundle,
         adapter_llm,
         adapter_identity=adapter_identity(adapter_report, adapter_dir),
+        gguf_llm=gguf_llm,
+        gguf_identity=gguf_provenance,
     )
 
     index_metadata = (
@@ -607,6 +659,49 @@ def train_eval(
         return
     render_comparison(comparison)
     console.print(f"Report written to [cyan]{paths.eval_training_json}[/cyan]")
+
+
+gguf_app = typer.Typer(
+    no_args_is_help=True,
+    help="Validate, register and serve a GGUF export (Phase 4).",
+)
+app.add_typer(gguf_app, name="gguf")
+
+
+@gguf_app.command("register")
+def gguf_register(
+    ctx: typer.Context,
+    book_id: Annotated[str, typer.Argument(help="Book id.")],
+    file: Annotated[
+        Path,
+        typer.Argument(
+            exists=True, dir_okay=False, readable=True, help="Downloaded .gguf file."
+        ),
+    ],
+    as_json: Annotated[
+        bool, typer.Option("--json", help="Print the registration report as JSON.")
+    ] = False,
+) -> None:
+    """Validate a GGUF export, copy it into training/gguf/ and emit serving files."""
+    settings = settings_from_context(ctx)
+    report, gguf_dir = register_gguf_or_fail(settings, book_id, file)
+
+    if as_json:
+        typer.echo(report.model_dump_json(indent=2))
+        return
+    render_gguf_registration(report, gguf_dir)
+    console.print(f"GGUF registered at [cyan]{gguf_dir}[/cyan]")
+
+
+@gguf_app.command("serve")
+def gguf_serve(
+    ctx: typer.Context,
+    book_id: Annotated[str, typer.Argument(help="Book id.")],
+) -> None:
+    """Print the serving commands for a registered GGUF (launches nothing)."""
+    settings = settings_from_context(ctx)
+    report, gguf_dir = load_registered_gguf_or_fail(settings, book_id)
+    render_gguf_serving(report, gguf_dir)
 
 
 @app.command("books")

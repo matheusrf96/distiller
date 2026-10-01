@@ -15,9 +15,10 @@ from ..evaluation import (
     load_golden,
 )
 from ..exceptions import DistillerError
+from ..gguf import load_gguf_report, register_gguf
 from ..indexing import IndexBundle, build_index, load_index
 from ..ingest import ingest_book
-from ..llm import get_adapter_llm, get_llm
+from ..llm import get_adapter_llm, get_gguf_llm, get_llm
 from ..models import BookDocument, Chunk
 from ..optional_deps import is_available
 from ..paths import BookPaths
@@ -41,6 +42,7 @@ if TYPE_CHECKING:
 
     from ..config import Settings
     from ..evaluation import GoldenItem
+    from ..gguf import GgufReport
     from ..llm import LLMClient
     from ..synthesis import RaftExample
 
@@ -255,27 +257,147 @@ def adapter_identity(report: TrainingReport, adapter_dir: Path) -> dict[str, Any
     }
 
 
+def load_registered_gguf_or_fail(
+    settings: Settings, book_id: str
+) -> tuple[GgufReport, Path]:
+    """Load the registered GGUF report, or a friendly CLI error.
+
+    Args:
+        settings: Pipeline settings.
+        book_id: Book whose GGUF registry should be read.
+
+    Returns:
+        The validated GGUF report and the registry directory.
+
+    Raises:
+        typer.BadParameter: When no GGUF is registered, its report is invalid
+            or the emitted Modelfile/serve.sh are missing.
+    """
+    paths = BookPaths.for_book(settings.artifacts_dir, book_id)
+    if not paths.gguf_report_json.exists():
+        raise typer.BadParameter(
+            f"No registered GGUF for '{book_id}'. "
+            f"Run `distiller gguf register {book_id} <file.gguf>` first."
+        )
+    if not paths.gguf_modelfile.exists() or not paths.gguf_serve_script.exists():
+        raise typer.BadParameter(
+            f"Registered GGUF for '{book_id}' is incomplete "
+            f"(Modelfile/serve.sh missing). "
+            f"Re-run `distiller gguf register {book_id} <file.gguf>`."
+        )
+    try:
+        return load_gguf_report(paths.gguf_report_json), paths.gguf_dir
+    except DistillerError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+
+def gguf_llm_or_fail(settings: Settings, report: GgufReport) -> LLMClient:
+    """Return the configured GGUF client, or a friendly CLI error.
+
+    Args:
+        settings: Pipeline settings (GGUF endpoint).
+        report: Registered GGUF report providing the default model name.
+
+    Returns:
+        Client pointed at the served GGUF.
+
+    Raises:
+        typer.BadParameter: When no endpoint is configured.
+    """
+    model_name = settings.gguf.model or report.model_name
+    try:
+        return get_gguf_llm(settings.gguf, model_name)
+    except DistillerError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+
+def gguf_identity(report: GgufReport, gguf_dir: Path) -> dict[str, Any]:
+    """Build the GGUF provenance block recorded in eval reports.
+
+    Args:
+        report: Registered GGUF report.
+        gguf_dir: Registry directory of the GGUF.
+
+    Returns:
+        JSON-ready provenance: path, file hash, quantization, architecture and
+        served model name.
+    """
+    return {
+        "path": str(gguf_dir),
+        "model_name": report.model_name,
+        "sha256": report.sha256,
+        "quantization": report.metadata.quantization,
+        "architecture": report.metadata.architecture,
+    }
+
+
+def register_gguf_or_fail(
+    settings: Settings, book_id: str, source: Path
+) -> tuple[GgufReport, Path]:
+    """Validate and register a downloaded GGUF, or a friendly CLI error.
+
+    Args:
+        settings: Pipeline settings.
+        book_id: Book the GGUF was exported for.
+        source: GGUF file downloaded from the training machine.
+
+    Returns:
+        The registration report and the registry directory.
+
+    Raises:
+        typer.BadParameter: When the book is not ingested or the file is
+            invalid (nothing is copied in that case).
+    """
+    paths = BookPaths.for_book(settings.artifacts_dir, book_id)
+    if not paths.book_json.exists():
+        raise typer.BadParameter(
+            f"No ingested book for id '{book_id}'. Run `distiller ingest` first."
+        )
+    try:
+        book = BookDocument.model_validate(read_json(paths.book_json))
+    except (OSError, ValueError) as exc:
+        raise typer.BadParameter(
+            f"Artifacts for '{book_id}' are incomplete or corrupt: {exc}"
+        ) from exc
+    try:
+        report = register_gguf(
+            source,
+            paths.gguf_dir,
+            book_id=book_id,
+            book_title=book.title,
+            model_name=settings.gguf.model,
+            adapter=_registered_adapter_identity(paths),
+        )
+    except DistillerError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    return report, paths.gguf_dir
+
+
 def build_training_runs(
     settings: Settings,
     bundle: IndexBundle,
     adapter_llm: LLMClient,
     *,
     adapter_identity: dict[str, Any] | None = None,
+    gguf_llm: LLMClient | None = None,
+    gguf_identity: dict[str, Any] | None = None,
 ) -> list[TrainingRun]:
-    """Pair the base and adapter generators with pipelines over one index.
+    """Pair the base, adapter and (optionally) GGUF generators with pipelines.
 
     Args:
-        settings: Pipeline settings (retrieval is shared by both variants).
-        bundle: Loaded index, reused by both variants.
+        settings: Pipeline settings (retrieval is shared by all variants).
+        bundle: Loaded index, reused by all variants.
         adapter_llm: Client for the served LoRA adapter.
         adapter_identity: Provenance recorded on the adapter variant.
+        gguf_llm: Optional client for the served GGUF export.
+        gguf_identity: Provenance recorded on the GGUF variant.
 
     Returns:
-        The base run first, then the adapter run.
+        The base run first, then adapter, then GGUF when configured.
     """
     base_pipeline = build_pipeline(settings, bundle)
     adapter_pipeline = build_pipeline(settings, bundle, llm=adapter_llm)
-    return [
+    runs = [
         TrainingRun(
             variant=GeneratorVariant(
                 name="base",
@@ -294,6 +416,34 @@ def build_training_runs(
             answer=partial(adapter_pipeline.ask),
         ),
     ]
+    if gguf_llm is not None:
+        gguf_pipeline = build_pipeline(settings, bundle, llm=gguf_llm)
+        runs.append(
+            TrainingRun(
+                variant=GeneratorVariant(
+                    name="gguf",
+                    kind="gguf",
+                    model=gguf_llm.name,
+                    gguf=dict(gguf_identity or {}),
+                ),
+                answer=partial(gguf_pipeline.ask),
+            )
+        )
+    return runs
+
+
+def _registered_adapter_identity(paths: BookPaths) -> dict[str, Any]:
+    """Adapter provenance for the GGUF report, empty when unavailable."""
+    if not paths.adapter_run_json.exists():
+        return {}
+    try:
+        report = load_adapter_report(paths.adapter_dir)
+    except DistillerError as exc:
+        logger.warning(
+            "Ignoring unreadable adapter registry %s: %s", paths.adapter_dir, exc
+        )
+        return {}
+    return adapter_identity(report, paths.adapter_dir)
 
 
 def load_training_examples(settings: Settings, book_id: str) -> list[RaftExample]:

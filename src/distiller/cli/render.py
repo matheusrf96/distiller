@@ -15,6 +15,7 @@ if TYPE_CHECKING:
     from pathlib import Path
 
     from ..evaluation import AblationReport
+    from ..gguf import GgufReport
     from ..models import Answer, BookDocument
     from ..paths import BookPaths
     from ..synthesis import DatasetManifest
@@ -298,6 +299,67 @@ def render_runtime(versions: dict[str, str]) -> None:
     """Render the `train --check-runtime` version table."""
     summary_table(
         "Training runtime", [(name, version) for name, version in versions.items()]
+    )
+
+
+def render_gguf_registration(report: GgufReport, gguf_dir: Path) -> None:
+    """Render the GGUF registration summary shown after `gguf register`."""
+    metadata = report.metadata
+    adapter = report.adapter.get("base_model", "-") if report.adapter else "-"
+    summary_table(
+        f"Registered GGUF: {report.book_id}",
+        [
+            ("model", report.model_name),
+            ("source file", report.source_file),
+            ("architecture", metadata.architecture or "-"),
+            ("quantization", metadata.quantization or "-"),
+            ("file type", _format_metric(metadata.file_type)),
+            ("gguf version", str(metadata.version)),
+            ("tensors", str(metadata.tensor_count)),
+            ("parameters", f"{metadata.parameter_count:,}"),
+            ("size", f"{report.size_bytes:,} bytes"),
+            ("adapter", str(adapter)),
+        ],
+    )
+    console.print(f"Model file: {gguf_dir / 'model.gguf'}", soft_wrap=True)
+    console.print(f"Modelfile: {gguf_dir / 'Modelfile'}", soft_wrap=True)
+    console.print(f"Serve script: {gguf_dir / 'serve.sh'}", soft_wrap=True)
+    console.print(f"SHA-256: {report.sha256}", soft_wrap=True)
+
+
+def render_gguf_serving(report: GgufReport, gguf_dir: Path) -> None:
+    """Render the registered GGUF paths and serving commands (launches nothing)."""
+    modelfile_path = gguf_dir / "Modelfile"
+    serve_script_path = gguf_dir / "serve.sh"
+    summary_table(
+        f"Serving GGUF: {report.book_id}",
+        [
+            ("model", report.model_name),
+            ("quantization", report.metadata.quantization or "-"),
+        ],
+    )
+    console.print(f"Model file: {gguf_dir / 'model.gguf'}", soft_wrap=True)
+    console.print(f"Modelfile: {modelfile_path}", soft_wrap=True)
+    console.print(f"Serve script: {serve_script_path}", soft_wrap=True)
+    console.print(f"SHA-256: {report.sha256}", soft_wrap=True)
+    console.print(
+        Panel(
+            modelfile_path.read_text(encoding="utf-8"),
+            title="Modelfile",
+            border_style="cyan",
+        )
+    )
+    console.print(
+        Panel(
+            serve_script_path.read_text(encoding="utf-8"),
+            title="serve.sh",
+            border_style="cyan",
+        )
+    )
+    console.print(
+        "Point distiller at the endpoint with "
+        "[cyan]DISTILLER_GGUF__BASE_URL=http://localhost:8080/v1[/cyan] "
+        "(llama-server) or [cyan]http://localhost:11434/v1[/cyan] (Ollama)."
     )
 
 
