@@ -34,6 +34,16 @@ embed = ["sentence-transformers >=3.0"]
 index = ["qdrant-client >=1.12"]
 # LLM-judged evaluation.
 eval = ["ragas >=0.2.6", "datasets >=2.20"]
+# QLoRA training harness (Unsloth + TRL). Deliberately not part of `all`:
+# Unsloth pins its own torch/CUDA stack, so `make install-all` stays portable.
+training = [
+    "torch >=2.2",
+    "unsloth >=2024.12",
+    "trl >=0.11",
+    "peft >=0.12",
+    "transformers >=4.44",
+    "bitsandbytes >=0.43",
+]
 # Everything needed for the full pipeline.
 all = ["distiller[pdf-ai,embed,index,eval]"]
 
