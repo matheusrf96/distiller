@@ -32,6 +32,7 @@ draft ──(approve)──> active ──(implement)──> archived
 | [SDD-0002](archived/SDD-0002-reranking-ablations.md) | Reranking Ablations | ✅ done | Compare retrieval configs (rerank on/off, top-k sweep) on one golden set (Phase 1) |
 | [SDD-0003](archived/SDD-0003-synthetic-qa.md) | Synthetic QA + RAFT Dataset | ✅ done | Grounded QA generation, deterministic filtering, RAFT training examples (Phase 2) |
 | [SDD-0004](archived/SDD-0004-qwen3-qlora-training.md) | Qwen3-4B QLoRA Training | ✅ done | Phase 3 harness: RAFT→chat formatting, QLoRA config, T4 runbook, adapter registry, base-vs-adapter eval |
+| [SDD-0005](active/SDD-0005-gguf-serving.md) | GGUF Serving | 🔧 approved | Phase 4: GGUF validation + registration, Ollama Modelfile, llama.cpp partial-offload serving, served-model eval |
 
 ## File naming
 
