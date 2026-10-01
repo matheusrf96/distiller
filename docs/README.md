@@ -8,6 +8,7 @@ docstrings; this directory holds the process and reference docs.
 | Document | Purpose |
 |----------|---------|
 | [Contributing & Conventions](CONTRIBUTING.md) | Code style, testing, exceptions, docs rules |
+| [QLoRA runbook](qlora-runbook.md) | Manual T4 training: upload, train, download, register, compare |
 | [../README.md](../README.md) | Install, quickstart, architecture overview |
 | [../AGENTS.md](../AGENTS.md) | Rules for AI agents working in this repo |
 

@@ -14,9 +14,11 @@ RAFT-style fine-tuning.
 - **Stack**: Python 3.12+, pydantic/pydantic-settings, Typer CLI, NumPy/Qdrant,
   sentence-transformers (optional), ruff + mypy(strict) + pytest.
 - **Status**: v1 complete (ingest → chunk → hybrid index → cited answers → eval);
-  Phase 1 complete (contextual retrieval + reranking ablations) and Phase 2
-  complete (synthetic QA + RAFT dataset, see `specs/`); fully offline test suite
-  (132 tests, hash embedder + fake LLM).
+  Phase 1 complete (contextual retrieval + reranking ablations), Phase 2
+  complete (synthetic QA + RAFT dataset) and Phase 3 harness complete (chat
+  splits, QLoRA config, T4 notebook, adapter registry, base-vs-adapter eval —
+  the GPU run is manual, see `docs/qlora-runbook.md`); fully offline test suite
+  (hash embedder + fake LLM).
 
 ---
 
@@ -90,13 +92,15 @@ src/distiller/
 ├── indexing/            # chunks -> vectors (embedders, numpy/qdrant stores, BM25)
 ├── rag/                 # retriever, reranker, prompts, generator, QA pipeline
 ├── synthesis/           # Phase 2: QA generation, filters, RAFT dataset
+├── training/            # Phase 3: chat formatting, splits, QLoRA config, registry
 ├── evaluation/          # golden sets, deterministic metrics, ablations, RAGAS
 └── cli/                 # Typer commands (thin) + context/render helpers
 ```
 
 Layering: `ingest → chunking → enrichment → indexing → rag → evaluation` plus
-`synthesis` (which consumes chunks and the LLM), wired by `cli/`.
-Cross-package access goes through each package's `__init__`.
+`synthesis` (consumes chunks and the LLM) and `training` (consumes the RAFT
+dataset; the heavy training stack is the optional `training` extra), wired by
+`cli/`. Cross-package access goes through each package's `__init__`.
 
 ---
 
@@ -121,6 +125,6 @@ Cross-package access goes through each package's `__init__`.
 | v1 | Ingest → chunk → hybrid index → cited answers → eval harness | ✅ done |
 | Phase 1 | Contextual chunk enrichment + reranking ablations (`SDD-0001`, `SDD-0002`) | ✅ done |
 | Phase 2 | Synthetic QA + RAFT dataset generation (`SDD-0003`) | ✅ done |
-| Phase 3 | Qwen3-4B QLoRA on a free T4 + eval vs baseline | planned |
+| Phase 3 | Qwen3-4B QLoRA harness + eval vs baseline (`SDD-0004`); T4 run manual | 🔧 harness done |
 | Phase 4 | GGUF export + CPU/GPU-hybrid serving (llama.cpp/Ollama) | planned |
 | Phase 5 | LightRAG/RAPTOR thematic layer (whole-book questions) | planned |

@@ -20,9 +20,9 @@ The project's thesis (backed by 2026 research):
 | Phase | Scope | State |
 | --- | --- | --- |
 | **v1** | Ingest → chunk → hybrid index → cited answers → eval harness | ✅ implemented |
-| Phase 1 | Contextual chunk enrichment, reranking ablations | planned |
-| Phase 2 | Synthetic QA + RAFT dataset (cloud teacher) | planned |
-| Phase 3 | Qwen3-4B QLoRA on free cloud GPU (T4) + eval vs baseline | planned |
+| Phase 1 | Contextual chunk enrichment, reranking ablations | ✅ implemented |
+| Phase 2 | Synthetic QA + RAFT dataset (cloud teacher) | ✅ implemented |
+| Phase 3 | Qwen3-4B QLoRA harness: dataset prep, T4 notebook, adapter registry, base-vs-adapter eval | 🔧 harness implemented — the T4 run is manual (see [docs/qlora-runbook.md](docs/qlora-runbook.md)) |
 | Phase 4 | GGUF export + CPU/GPU-hybrid serving (llama.cpp/Ollama) | planned |
 | Phase 5 | LightRAG/RAPTOR thematic layer (whole-book questions) | planned |
 
@@ -39,7 +39,12 @@ make install-all
 ```
 
 Heavy extras can be picked individually: `uv sync --extra pdf-ai`, `--extra embed`,
-`--extra index`, `--extra eval`.
+`--extra index`, `--extra eval`, `--extra training`.
+
+The `training` extra (Unsloth + TRL + bitsandbytes) is deliberately **not** part of
+`make install-all`: Unsloth pins its own torch/CUDA build, so the portable install
+stays portable. It is only needed to run the training notebook, not to prepare data
+or evaluate adapters.
 
 ## Quickstart
 
@@ -67,6 +72,15 @@ uv run distiller ablation the-adventures-of-sherlock-holmes --top-k 4,8,12
 # 5. Distill training data: grounded QA + RAFT examples (Phase 2)
 uv run distiller synth the-adventures-of-sherlock-holmes --max-chunks 100
 
+# 6. Prepare the QLoRA training data + T4 notebook (Phase 3)
+uv run distiller train the-adventures-of-sherlock-holmes
+
+# ...train manually on a free T4 with training/train_t4.ipynb, then register:
+uv run distiller train the-adventures-of-sherlock-holmes --register ./adapter
+
+# 7. Compare base vs fine-tuned adapter on the same golden set
+uv run distiller train-eval the-adventures-of-sherlock-holmes
+
 # List / inspect
 uv run distiller books
 uv run distiller info the-adventures-of-sherlock-holmes
@@ -84,7 +98,12 @@ artifacts/the-lantern-keeper/
 │   ├── metadata.json # embedder identity, dim, store, chunk_count, contextual
 │   └── store/        # vectors + records (numpy) or qdrant local db
 ├── dataset/          # Phase 2: qa.jsonl, rejected.jsonl, raft.jsonl, manifest.json
-└── eval/report.json  # metrics per run (+ index identity for run comparison)
+├── training/         # Phase 3: train.jsonl, validation.jsonl, manifest.json,
+│   │                 #          qlora.json, train_t4.ipynb
+│   └── adapter/      #          registered T4 adapter + run.json
+└── eval/
+    ├── report.json   # metrics per run (+ index/generator identity)
+    └── training.json # base-vs-adapter comparison (train-eval)
 ```
 
 ## Configuration
@@ -116,6 +135,14 @@ export DISTILLER_STORE__BACKEND=numpy
 # Contextual retrieval (opt-in): LLM-generated context prefixes per chunk
 export DISTILLER_ENRICHMENT__ENABLED=true
 export DISTILLER_ENRICHMENT__MAX_CONTEXT_CHARS=500
+
+# Training data split (Phase 3)
+export DISTILLER_TRAINING__SEED=13
+export DISTILLER_TRAINING__VAL_RATIO=0.1
+
+# Served LoRA adapter (Phase 3 eval); model=None means "no adapter configured"
+export DISTILLER_ADAPTER__BASE_URL=http://localhost:8000/v1
+export DISTILLER_ADAPTER__MODEL=the-lantern-keeper-lora
 ```
 
 `distiller.toml` example:
@@ -161,6 +188,9 @@ book.pdf / book.epub
   citation-enforcing prompt → LLM         (rag/)      refuses when not in book
         ▼
   Answer{text, citations[], contexts[]} → eval metrics (evaluation/)
+        ▼
+  synth → RAFT dataset → chat splits → QLoRA notebook → adapter
+  (synthesis/)            (training/)                    → base-vs-adapter eval
 ```
 
 Design decisions worth knowing:
@@ -179,7 +209,21 @@ Design decisions worth knowing:
   rate, refusal accuracy, snippet coverage and citation coverage with no LLM; RAGAS
   (LLM-judged faithfulness) is opt-in via `--ragas`.
 - **Heavy dependencies are optional.** Core install is light; docling/torch/qdrant/ragas
-  live in extras, and the parsers/embedders degrade with explicit messages.
+  live in extras, and the parsers/embedders degrade with explicit messages. The
+  `training` extra is separate from `all` because Unsloth pins its own torch/CUDA stack.
+- **Training data reuses the RAG prompt contract.** The chat formatter imports
+  `build_system_prompt`/`build_user_prompt` instead of duplicating them, so training
+  and inference cannot drift; the dataset manifest records a prompt hash to make any
+  drift visible.
+- **The repo ships the training harness; the T4 run is manual.** `distiller train`
+  prepares the chat splits, pins every hyperparameter in `training/qlora.json` and
+  emits a self-contained notebook; the adapter comes back via `--register` and is
+  compared with `distiller train-eval`. CI and the offline suite never train a model.
+- **One variable per comparison.** `eval/report.json` gains a `generator` block
+  (kind base|adapter, model, adapter provenance) next to `index`, and `train-eval`
+  records one shared `index`/`retrieval` identity per variant, so a reader can verify
+  that fine-tuned-student + RAG and base + RAG differ in exactly the generator.
+  Deltas reuse the ablation helper; no automatic winner is declared.
 
 ## Code conventions
 
@@ -246,12 +290,12 @@ if outputs are distributed.
 
 ## Roadmap details
 
-- **Phase 2 (distillation data):** generate grounded QA pairs from chunks (teacher
-  model via API), filter with RAGAS/quality heuristics, format as RAFT examples
-  (golden + distractor chunks, verbatim-citation chain-of-thought answers, explicit
-  "not in the book" negatives).
 - **Phase 3 (training):** QLoRA on Qwen3-4B (Apache 2.0, best fine-tunability at this
-  size, 119 languages) with Unsloth on a free T4; evaluate fine-tuned-student+RAG
-  against base+RAG on the same golden set.
+  size, 119 languages) with Unsloth + TRL on a free T4. The harness (chat formatting,
+  pinned `qlora.json`, notebook emission, adapter registry, base-vs-adapter eval) is
+  implemented; the GPU run itself is a manual step documented in
+  [docs/qlora-runbook.md](docs/qlora-runbook.md).
 - **Phase 4 (serving):** merge adapters, export GGUF (Q4_K_M), run via Ollama with
-  partial GPU offload; per-book adapter registry.
+  partial GPU offload. The serving registry builds on the same
+  `training/adapter/run.json` identity that Phase 3 registers; Phase 3's registry is
+  scoped to evaluation on purpose.
