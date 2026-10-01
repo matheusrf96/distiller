@@ -15,10 +15,12 @@ RAFT-style fine-tuning.
   sentence-transformers (optional), ruff + mypy(strict) + pytest.
 - **Status**: v1 complete (ingest → chunk → hybrid index → cited answers → eval);
   Phase 1 complete (contextual retrieval + reranking ablations), Phase 2
-  complete (synthetic QA + RAFT dataset) and Phase 3 harness complete (chat
+  complete (synthetic QA + RAFT dataset), Phase 3 harness complete (chat
   splits, QLoRA config, T4 notebook, adapter registry, base-vs-adapter eval —
-  the GPU run is manual, see `docs/qlora-runbook.md`); fully offline test suite
-  (hash embedder + fake LLM).
+  the GPU run is manual, see `docs/qlora-runbook.md`) and Phase 4 harness
+  complete (GGUF validation/registry, Ollama Modelfile + llama.cpp `serve.sh`,
+  served-model eval — the T4 export and local server are manual, see
+  `docs/gguf-runbook.md`); fully offline test suite (hash embedder + fake LLM).
 
 ---
 
@@ -93,14 +95,16 @@ src/distiller/
 ├── rag/                 # retriever, reranker, prompts, generator, QA pipeline
 ├── synthesis/           # Phase 2: QA generation, filters, RAFT dataset
 ├── training/            # Phase 3: chat formatting, splits, QLoRA config, registry
+├── gguf/                # Phase 4: dependency-free GGUF reader, registry, serving
 ├── evaluation/          # golden sets, deterministic metrics, ablations, RAGAS
 └── cli/                 # Typer commands (thin) + context/render helpers
 ```
 
 Layering: `ingest → chunking → enrichment → indexing → rag → evaluation` plus
-`synthesis` (consumes chunks and the LLM) and `training` (consumes the RAFT
-dataset; the heavy training stack is the optional `training` extra), wired by
-`cli/`. Cross-package access goes through each package's `__init__`.
+`synthesis` (consumes chunks and the LLM), `training` (consumes the RAFT
+dataset; the heavy training stack is the optional `training` extra) and `gguf`
+(validates/registers the downloaded export and emits serving commands), wired
+by `cli/`. Cross-package access goes through each package's `__init__`.
 
 ---
 
@@ -126,5 +130,5 @@ dataset; the heavy training stack is the optional `training` extra), wired by
 | Phase 1 | Contextual chunk enrichment + reranking ablations (`SDD-0001`, `SDD-0002`) | ✅ done |
 | Phase 2 | Synthetic QA + RAFT dataset generation (`SDD-0003`) | ✅ done |
 | Phase 3 | Qwen3-4B QLoRA harness + eval vs baseline (`SDD-0004`); T4 run manual | 🔧 harness done |
-| Phase 4 | GGUF export + CPU/GPU-hybrid serving (llama.cpp/Ollama) | planned |
+| Phase 4 | GGUF export + CPU/GPU-hybrid serving (`SDD-0005`); T4 export + local serving manual | 🔧 harness done |
 | Phase 5 | LightRAG/RAPTOR thematic layer (whole-book questions) | planned |

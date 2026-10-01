@@ -121,6 +121,11 @@ recorded as skipped and the other still reports. `contains_rate` is the primary
 signal; `refusal_accuracy` and `citation_coverage` are the guards. No automatic
 winner is declared.
 
+Once the adapter is registered, the T4 notebook can also merge it and export a
+Q4_K_M GGUF for local serving. See [gguf-runbook.md](gguf-runbook.md) for the
+download, `distiller gguf register`, the Ollama/llama.cpp commands and the
+`eval --gguf` / `train-eval --gguf` comparison.
+
 ## Troubleshooting
 
 | Symptom | Fix |
@@ -132,6 +137,8 @@ winner is declared.
 | `No registered adapter ... --register` | download `adapter/` from the T4 and run `distiller train <book> --register <dir>` |
 | `No adapter endpoint configured` | set `DISTILLER_ADAPTER__MODEL` / `DISTILLER_ADAPTER__BASE_URL` |
 
-Related: [README](../README.md) (pipeline overview), [CONTRIBUTING](CONTRIBUTING.md)
-(conventions), [specs/SDD-0004](../specs/active/SDD-0004-qwen3-qlora-training.md)
+Related: [README](../README.md) (pipeline overview),
+[gguf-runbook.md](gguf-runbook.md) (Phase 4: export, serve, evaluate),
+[CONTRIBUTING](CONTRIBUTING.md) (conventions),
+[specs/SDD-0004](../specs/active/SDD-0004-qwen3-qlora-training.md)
 (the approved spec).

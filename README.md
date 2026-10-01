@@ -23,7 +23,7 @@ The project's thesis (backed by 2026 research):
 | Phase 1 | Contextual chunk enrichment, reranking ablations | ✅ implemented |
 | Phase 2 | Synthetic QA + RAFT dataset (cloud teacher) | ✅ implemented |
 | Phase 3 | Qwen3-4B QLoRA harness: dataset prep, T4 notebook, adapter registry, base-vs-adapter eval | 🔧 harness implemented — the T4 run is manual (see [docs/qlora-runbook.md](docs/qlora-runbook.md)) |
-| Phase 4 | GGUF export + CPU/GPU-hybrid serving (llama.cpp/Ollama) | planned |
+| Phase 4 | GGUF export + CPU/GPU-hybrid serving (llama.cpp/Ollama) | 🔧 harness implemented — the T4 export and local serving are manual (see [docs/gguf-runbook.md](docs/gguf-runbook.md)) |
 | Phase 5 | LightRAG/RAPTOR thematic layer (whole-book questions) | planned |
 
 ## Install
@@ -81,6 +81,15 @@ uv run distiller train the-adventures-of-sherlock-holmes --register ./adapter
 # 7. Compare base vs fine-tuned adapter on the same golden set
 uv run distiller train-eval the-adventures-of-sherlock-holmes
 
+# 8. Validate + register the Q4_K_M GGUF exported by the T4 notebook (Phase 4)
+uv run distiller gguf register the-adventures-of-sherlock-holmes ~/Downloads/model-Q4_K_M.gguf
+uv run distiller gguf serve the-adventures-of-sherlock-holmes   # prints the exact commands
+
+# ...serve it with Ollama or llama.cpp (see docs/gguf-runbook.md), then evaluate:
+export DISTILLER_GGUF__BASE_URL=http://localhost:8080/v1
+uv run distiller eval the-adventures-of-sherlock-holmes --gguf
+uv run distiller train-eval the-adventures-of-sherlock-holmes --gguf
+
 # List / inspect
 uv run distiller books
 uv run distiller info the-adventures-of-sherlock-holmes
@@ -100,7 +109,8 @@ artifacts/the-lantern-keeper/
 ├── dataset/          # Phase 2: qa.jsonl, rejected.jsonl, raft.jsonl, manifest.json
 ├── training/         # Phase 3: train.jsonl, validation.jsonl, manifest.json,
 │   │                 #          qlora.json, train_t4.ipynb
-│   └── adapter/      #          registered T4 adapter + run.json
+│   ├── adapter/      #          registered T4 adapter + run.json
+│   └── gguf/         # Phase 4: model.gguf, gguf.json, Modelfile, serve.sh
 └── eval/
     ├── report.json   # metrics per run (+ index/generator identity)
     └── training.json # base-vs-adapter comparison (train-eval)
@@ -143,6 +153,10 @@ export DISTILLER_TRAINING__VAL_RATIO=0.1
 # Served LoRA adapter (Phase 3 eval); model=None means "no adapter configured"
 export DISTILLER_ADAPTER__BASE_URL=http://localhost:8000/v1
 export DISTILLER_ADAPTER__MODEL=the-lantern-keeper-lora
+
+# Served GGUF (Phase 4); base_url=None disables --gguf
+export DISTILLER_GGUF__BASE_URL=http://localhost:8080/v1     # llama-server (or :11434 for Ollama)
+export DISTILLER_GGUF__MODEL=distiller-the-lantern-keeper    # optional; default is the registered name
 ```
 
 `distiller.toml` example:
@@ -220,10 +234,17 @@ Design decisions worth knowing:
   emits a self-contained notebook; the adapter comes back via `--register` and is
   compared with `distiller train-eval`. CI and the offline suite never train a model.
 - **One variable per comparison.** `eval/report.json` gains a `generator` block
-  (kind base|adapter, model, adapter provenance) next to `index`, and `train-eval`
-  records one shared `index`/`retrieval` identity per variant, so a reader can verify
-  that fine-tuned-student + RAG and base + RAG differ in exactly the generator.
-  Deltas reuse the ablation helper; no automatic winner is declared.
+  (kind base|adapter|gguf, model, adapter/GGUF provenance) next to `index`, and
+  `train-eval` records one shared `index`/`retrieval` identity per variant, so a
+  reader can verify that fine-tuned-student + RAG, base + RAG and the served Q4
+  differ in exactly the generator. Deltas reuse the ablation helper; no automatic
+  winner is declared.
+- **Serving is just another OpenAI-compatible endpoint.** `distiller gguf register`
+  validates the downloaded Q4_K_M file with a dependency-free reader, records its
+  hash, quantization and metadata in `gguf.json`, and emits the exact Ollama
+  Modelfile and llama.cpp `serve.sh` commands for partial GPU offload. The repo
+  never launches a server; `eval --gguf` and `train-eval --gguf` evaluate the served
+  model over the same golden set.
 
 ## Code conventions
 
@@ -295,7 +316,9 @@ if outputs are distributed.
   pinned `qlora.json`, notebook emission, adapter registry, base-vs-adapter eval) is
   implemented; the GPU run itself is a manual step documented in
   [docs/qlora-runbook.md](docs/qlora-runbook.md).
-- **Phase 4 (serving):** merge adapters, export GGUF (Q4_K_M), run via Ollama with
-  partial GPU offload. The serving registry builds on the same
-  `training/adapter/run.json` identity that Phase 3 registers; Phase 3's registry is
-  scoped to evaluation on purpose.
+- **Phase 4 (serving):** the T4 notebook merges the adapter and exports a Q4_K_M
+  GGUF; `distiller gguf register` validates it with a dependency-free reader,
+  records its identity and emits the Ollama Modelfile + llama.cpp `serve.sh` for
+  partial GPU offload on a 4 GB card; `eval --gguf` and `train-eval --gguf` evaluate
+  the served model. The T4 export and the local server are manual steps documented
+  in [docs/gguf-runbook.md](docs/gguf-runbook.md).
