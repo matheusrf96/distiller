@@ -118,3 +118,62 @@ def test_list_books_skips_corrupt_entries(
     )
 
     assert list_books(settings.artifacts_dir) == []
+
+
+def test_list_books_skips_directories_without_book_json(
+    settings: Settings,
+) -> None:
+    """Directories without a book.json are skipped by the listing."""
+    (settings.artifacts_dir / "not-a-book").mkdir(parents=True)
+
+    assert list_books(settings.artifacts_dir) == []
+
+
+def test_build_index_rejects_a_book_without_chunks(settings: Settings) -> None:
+    """An ingested book with no chapters fails with an actionable error."""
+    paths = BookPaths.for_book(settings.artifacts_dir, "empty-book").ensure()
+    write_json(
+        paths.book_json,
+        {
+            "book_id": "empty-book",
+            "title": "Empty",
+            "source_path": "empty.txt",
+            "source_format": "txt",
+        },
+    )
+
+    with pytest.raises(IndexBuildError, match="no chunks"):
+        build_index("empty-book", settings)
+
+
+def test_bm25_index_validates_lengths_and_empty_searches() -> None:
+    """BM25 rejects mismatched inputs and returns no hits when empty."""
+    from distiller.indexing.bm25 import BM25Index
+
+    with pytest.raises(ValueError, match="same length"):
+        BM25Index(["a"], [])
+    assert BM25Index([], []).search("anything", k=3) == []
+
+
+def test_index_bundle_reuses_a_provided_chunk_lookup() -> None:
+    """An explicit chunk_by_id skips the automatic lookup construction."""
+    from distiller.indexing import IndexBundle
+    from distiller.indexing.bm25 import BM25Index
+    from distiller.indexing.embedder import HashingEmbedder
+    from distiller.indexing.store import NumpyStore
+    from distiller.models import BookDocument, Chunk
+
+    book = BookDocument(
+        book_id="b", title="T", source_path="x.txt", source_format="txt"
+    )
+    chunk = Chunk(id="a", book_id="b", ordinal=0, text="t", chapter="c")
+    bundle = IndexBundle(
+        book=book,
+        chunks=[],
+        store=NumpyStore(dim=4),
+        bm25=BM25Index([], []),
+        embedder=HashingEmbedder(dim=4),
+        chunk_by_id={"a": chunk},
+    )
+
+    assert set(bundle.chunk_by_id) == {"a"}

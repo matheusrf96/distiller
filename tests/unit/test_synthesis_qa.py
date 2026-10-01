@@ -120,3 +120,22 @@ def test_generate_pairs_tolerates_llm_errors_and_bad_json(
 
     assert pairs == []
     assert len(caplog.records) >= 2
+
+
+def test_generate_pairs_treats_non_list_quotes_as_empty(
+    corpus_factory: CorpusFactory,
+) -> None:
+    """A non-list quotes field becomes an empty list on the pair (REQ-SQ-002)."""
+    book, chunks = corpus_factory()
+    response = json.dumps([{"question": "q?", "answer": "a", "quotes": "oops"}])
+
+    pairs = generate_pairs(
+        FakeLLM(response=response), book, chunks[:1], questions_per_chunk=1
+    )
+
+    assert pairs[0].quotes == []
+
+
+def test_parse_pairs_returns_empty_when_bracket_recovery_fails() -> None:
+    """Bracketed text that is still invalid JSON yields no pairs (REQ-SQ-004)."""
+    assert parse_pairs("prose [definitely not json] trailing") == []

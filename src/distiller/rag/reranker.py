@@ -16,11 +16,11 @@ if TYPE_CHECKING:
 @runtime_checkable
 class Reranker(Protocol):
     @property
-    def name(self) -> str: ...
+    def name(self) -> str: ...  # pragma: no cover - protocol stub
 
     def rerank(
         self, query: str, items: list[RetrievedChunk], top_k: int
-    ) -> list[RetrievedChunk]: ...
+    ) -> list[RetrievedChunk]: ...  # pragma: no cover - protocol stub
 
 
 class CrossEncoderReranker:

@@ -10,7 +10,7 @@ class LLMClient(Protocol):
     """Minimal chat-completion interface satisfied by any OpenAI-compatible backend."""
 
     @property
-    def name(self) -> str: ...
+    def name(self) -> str: ...  # pragma: no cover - protocol stub
 
     def complete(
         self,
@@ -31,4 +31,4 @@ class LLMClient(Protocol):
         Returns:
             The generated text.
         """
-        ...
+        ...  # pragma: no cover - protocol stub

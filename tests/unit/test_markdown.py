@@ -68,3 +68,13 @@ def test_page_number_annotates_blocks() -> None:
     blocks = markdown_to_blocks("Body text.\n", page=7)
 
     assert blocks and all(block.page == 7 for block in blocks)
+
+
+def test_blocks_to_markdown_renders_code_and_quotes() -> None:
+    """Code and quote blocks render with their Markdown decorations."""
+    blocks = markdown_to_blocks("```\ncode line\n```\n\n> quoted line\n")
+
+    rendered = blocks_to_markdown(blocks)
+
+    assert "```\ncode line\n```" in rendered
+    assert "> quoted line" in rendered

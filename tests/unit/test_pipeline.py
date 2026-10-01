@@ -143,6 +143,21 @@ def test_prompts_render_provenance_attributes() -> None:
     assert "couldn't find" in build_system_prompt("The Book")
 
 
+def test_render_documents_skips_absent_provenance() -> None:
+    """Chunks without a heading or page render only id and chapter."""
+    from distiller.rag.prompts import render_documents
+
+    context = RetrievedChunk(
+        chunk=Chunk(id="c0", book_id="b", ordinal=0, text="text", chapter="One")
+    )
+
+    rendered = render_documents([context])
+
+    assert 'chapter="One"' in rendered
+    assert "section=" not in rendered
+    assert "pages=" not in rendered
+
+
 def test_answer_model_dump_is_json_serializable() -> None:
     """Answers serialize cleanly for the --json CLI mode."""
     settings = RetrievalSettings(top_k_final=1)

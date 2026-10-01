@@ -26,7 +26,7 @@ class VectorStore(Protocol):
     @property
     def dim(self) -> int:
         """Embedding dimension the store was created with."""
-        ...
+        ...  # pragma: no cover - protocol stub
 
     def upsert(
         self,
@@ -35,21 +35,21 @@ class VectorStore(Protocol):
         payloads: Sequence[Payload],
     ) -> None:
         """Add vectors and their payloads to the store."""
-        ...
+        ...  # pragma: no cover - protocol stub
 
     def search(
         self, vector: np.ndarray, k: int, where: dict[str, Any] | None = None
     ) -> list[SearchHit]:
         """Return the top ``k`` chunks by similarity, with optional payload filters."""
-        ...
+        ...  # pragma: no cover - protocol stub
 
     def count(self) -> int:
         """Number of stored vectors."""
-        ...
+        ...  # pragma: no cover - protocol stub
 
     def persist(self) -> None:
         """Flush any in-memory state to the store's storage location."""
-        ...
+        ...  # pragma: no cover - protocol stub
 
 
 class NumpyStore:

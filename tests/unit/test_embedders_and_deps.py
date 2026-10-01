@@ -2,12 +2,19 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import numpy as np
 import pytest
 
 from distiller.config import EmbeddingSettings
-from distiller.exceptions import MissingDependencyError
-from distiller.indexing.embedder import HashingEmbedder, get_embedder
+from distiller.exceptions import ConfigurationError, MissingDependencyError
+from distiller.indexing.embedder import (
+    QWEN3_QUERY_PROMPT,
+    HashingEmbedder,
+    SentenceTransformerEmbedder,
+    get_embedder,
+)
 from distiller.optional_deps import is_available, require
 
 
@@ -78,3 +85,74 @@ def test_require_caches_and_reports_missing_dependency() -> None:
     assert excinfo.value.module == "definitely_not_a_real_module_xyz"
     assert excinfo.value.extra == "dev"
     assert "Testing purpose" in str(excinfo.value)
+
+
+class FakeSentenceTransformer:
+    """Deterministic stand-in for sentence_transformers.SentenceTransformer."""
+
+    def __init__(self, model_name: str, device: str | None = None) -> None:
+        self.model_name = model_name
+        self.device = device
+
+    def get_sentence_embedding_dimension(self) -> int:
+        return 8
+
+    def encode(self, texts: list[str], **kwargs: object) -> np.ndarray:
+        base = np.arange(1.0, 9.0, dtype=np.float32)
+        return np.tile(base, (len(texts), 1))
+
+
+def fake_sentence_transformers(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Route the embedder's require() to the fake module."""
+    module = SimpleNamespace(SentenceTransformer=FakeSentenceTransformer)
+    monkeypatch.setattr(
+        "distiller.indexing.embedder.require", lambda name, **kwargs: module
+    )
+
+
+def test_hashing_embedder_empty_text_is_all_zeros() -> None:
+    """Text without tokens has no direction and stays unnormalized."""
+    vector = HashingEmbedder(dim=64).embed_query("")
+
+    assert not vector.any()
+
+
+def test_sentence_transformer_embedder_loads_and_truncates(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The loaded model encodes documents and queries with MRL truncation."""
+    fake_sentence_transformers(monkeypatch)
+    embedder = SentenceTransformerEmbedder(
+        "Qwen/Qwen3-Embedding-0.6B", dim=4, batch_size=2
+    )
+
+    assert embedder.name == "st:Qwen/Qwen3-Embedding-0.6B:4"
+    assert embedder.query_prompt == QWEN3_QUERY_PROMPT
+    documents = embedder.embed_documents(["one", "two"])
+    assert documents.shape == (2, 4)
+    assert np.allclose(np.linalg.norm(documents, axis=1), 1.0)
+    assert embedder.embed_documents([]).shape == (0, 4)
+    assert embedder.embed_query("lantern").shape == (4,)
+
+
+def test_sentence_transformer_embedder_keeps_native_dim_without_a_prompt(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A non-Qwen model keeps its native dim and has no query prompt."""
+    fake_sentence_transformers(monkeypatch)
+    embedder = SentenceTransformerEmbedder("BAAI/bge-m3")
+
+    assert embedder.dim == 8
+    assert embedder.query_prompt is None
+    assert embedder.embed_documents(["one"]).shape == (1, 8)
+    assert embedder.embed_query("lantern").shape == (8,)
+
+
+def test_sentence_transformer_embedder_rejects_oversized_dim(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A requested dim above the native dim is a configuration error."""
+    fake_sentence_transformers(monkeypatch)
+
+    with pytest.raises(ConfigurationError, match="exceeds native dim"):
+        SentenceTransformerEmbedder("Qwen/Qwen3-Embedding-0.6B", dim=16)

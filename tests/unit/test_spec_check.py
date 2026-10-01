@@ -289,3 +289,74 @@ def test_main_exit_codes(tmp_path: Path, capsys: pytest.LogCaptureFixture) -> No
     path.write_text(spec_text(sections={"Non-Goals": None}), encoding="utf-8")
     assert main([str(tmp_path / "specs")]) == 1
     assert "spec-check: FAILED" in capsys.readouterr().out
+
+
+def test_missing_specs_directory_is_reported(tmp_path: Path) -> None:
+    """A missing specs/ directory is a finding, not a crash."""
+    findings = check_specs(tmp_path / "missing")
+
+    assert any("specs directory not found" in finding.message for finding in findings)
+
+
+def test_missing_front_matter_is_reported(tmp_path: Path) -> None:
+    """Specs without YAML front-matter are findings."""
+    build_spec_tree(tmp_path, text="# No front matter\n\n## Problem\n")
+
+    findings = check_specs(tmp_path / "specs")
+
+    assert any("missing YAML front-matter" in finding.message for finding in findings)
+
+
+def test_invalid_status_and_missing_fields_are_reported(tmp_path: Path) -> None:
+    """Invalid statuses and missing owner/created fields are findings."""
+    text = spec_text(status="bogus").replace("owner: matheus\n", "")
+    build_spec_tree(tmp_path, status="bogus", directory="drafts", text=text)
+
+    findings = check_specs(tmp_path / "specs")
+    messages = [finding.message for finding in findings]
+
+    assert any("invalid or missing status" in message for message in messages)
+    assert any("missing owner" in message for message in messages)
+
+
+def test_empty_requirements_and_acceptance_are_reported(tmp_path: Path) -> None:
+    """Empty Requirements and Acceptance Criteria sections are findings."""
+    build_spec_tree(
+        tmp_path,
+        text=spec_text(
+            sections={"Requirements": "Nothing.", "Acceptance Criteria": "Nothing."}
+        ),
+    )
+
+    findings = check_specs(tmp_path / "specs")
+    messages = [finding.message for finding in findings]
+
+    assert any("no numbered requirements" in message for message in messages)
+    assert any("no AC items" in message for message in messages)
+
+
+def test_non_sequential_acceptance_is_reported(tmp_path: Path) -> None:
+    """AC labels must run AC1..ACn."""
+    broken = "- **AC1** (Req 1) Fine.\n- **AC3** (Req 2) Skips a label."
+    build_spec_tree(tmp_path, text=spec_text(sections={"Acceptance Criteria": broken}))
+
+    findings = check_specs(tmp_path / "specs")
+
+    assert any("not sequential" in finding.message for finding in findings)
+
+
+def test_done_spec_needs_the_implemented_line(tmp_path: Path) -> None:
+    """Done specs need the 'Implemented in' line in Outcomes."""
+    text = spec_text(outcomes=False) + "\n## Outcomes\n\n- Something else.\n"
+    build_spec_tree(tmp_path, text=text)
+
+    findings = check_specs(tmp_path / "specs")
+
+    assert any("'Implemented in'" in finding.message for finding in findings)
+
+
+def test_dir_for_unknown_status_falls_back_to_drafts() -> None:
+    """The defensive status lookup falls back to drafts/."""
+    from distiller.spec_check import _dir_for
+
+    assert _dir_for("nonexistent") == "drafts"

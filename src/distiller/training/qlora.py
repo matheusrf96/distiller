@@ -102,7 +102,7 @@ def training_stack_versions() -> dict[str, str]:
     """
     require_training_stack()
     versions: dict[str, str] = {}
-    for module_name in TRAINING_MODULES:  # pragma: no cover - needs the GPU stack
+    for module_name in TRAINING_MODULES:
         module = require(module_name, extra="training", purpose="QLoRA training")
         versions[module_name] = str(getattr(module, "__version__", "unknown"))
     return versions

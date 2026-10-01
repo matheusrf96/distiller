@@ -7,7 +7,12 @@ from typing import TYPE_CHECKING
 
 from distiller.config import ThematicSettings
 from distiller.llm.fake import FakeLLM
-from distiller.thematic import build_tree, summary_cache_key
+from distiller.thematic import (
+    Summarizer,
+    build_tree,
+    load_summary_cache,
+    summary_cache_key,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -106,3 +111,56 @@ def test_summary_cache_key_embeds_model_and_source() -> None:
         max_source_chars=6000,
         max_summary_chars=1200,
     )
+
+
+def test_summarizer_rejects_blank_sources_and_unusable_completions(
+    tmp_path: Path,
+) -> None:
+    """Blank sources and unusable completions fail softly, with warnings."""
+    cache = tmp_path / "summaries.jsonl"
+    blank = Summarizer(FakeLLM(), cache_path=cache)
+
+    assert (
+        blank.summarize("n", book_title="B", unit_title="U", source_text="   ") is None
+    )
+
+    too_short = Summarizer(FakeLLM(response="short"), cache_path=cache)
+    assert (
+        too_short.summarize(
+            "n", book_title="B", unit_title="U", source_text="A real source."
+        )
+        is None
+    )
+
+    refusal = Summarizer(
+        FakeLLM(response="I'm sorry, I cannot help with that."), cache_path=cache
+    )
+    assert (
+        refusal.summarize(
+            "n", book_title="B", unit_title="U", source_text="A real source."
+        )
+        is None
+    )
+
+
+def test_summary_cache_ignores_rows_without_a_summary(tmp_path: Path) -> None:
+    """Cache rows missing a key or summary are skipped."""
+    cache = tmp_path / "summaries.jsonl"
+    cache.write_text(
+        '{"key": "abc"}\n{"key": "def", "summary": "ok"}\n', encoding="utf-8"
+    )
+
+    assert load_summary_cache(cache) == {"def": "ok"}
+
+
+def test_summarizer_tolerates_an_unwritable_cache(tmp_path: Path) -> None:
+    """A cache write failure is logged and the summary is still returned."""
+    blocker = tmp_path / "blocker"
+    blocker.write_text("file, not a directory", encoding="utf-8")
+    summarizer = Summarizer(FakeLLM(), cache_path=blocker / "summaries.jsonl")
+
+    summary = summarizer.summarize(
+        "n", book_title="B", unit_title="U", source_text="A real source text."
+    )
+
+    assert summary is not None

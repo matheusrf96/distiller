@@ -14,6 +14,7 @@ from typer.testing import CliRunner
 
 from distiller.cli.main import app
 from distiller.evaluation.golden import GoldenItem, save_golden
+from distiller.exceptions import ConfigurationError
 from distiller.optional_deps import is_available
 from distiller.training.qlora import TRAINING_MODULES
 
@@ -1350,3 +1351,449 @@ def test_thematic_pipeline_end_to_end(
         check=True,
     )
     assert probe.stdout.strip() == "False"
+
+
+def test_cli_override_validation_reports_friendly_errors(
+    offline_env: Path,
+    epub_factory: Callable[..., Path],
+    tmp_path: Path,
+) -> None:
+    """Invalid settings overrides fail actionably for ingest and index."""
+    epub_path = epub_factory(tmp_path / "lantern.epub")
+
+    result = runner.invoke(app, ["ingest", str(epub_path), "--pdf-backend", "bogus"])
+    assert result.exit_code != 0
+    assert "Invalid setting" in flat_output(result)
+    assert "Traceback" not in result.output
+
+    invoke_cli(["ingest", str(epub_path)])
+    result = runner.invoke(app, ["index", BOOK_ID, "--embedding-backend", "bogus"])
+    assert result.exit_code != 0
+    assert "Invalid setting" in flat_output(result)
+    assert "Traceback" not in result.output
+
+
+def test_ask_local_requires_an_index(
+    offline_env: Path,
+    epub_factory: Callable[..., Path],
+    tmp_path: Path,
+) -> None:
+    """A local ask on an unindexed book names `distiller index`."""
+    epub_path = epub_factory(tmp_path / "lantern.epub")
+    invoke_cli(["ingest", str(epub_path)])
+
+    result = runner.invoke(app, ["ask", BOOK_ID, "What happened?"])
+
+    assert result.exit_code != 0
+    assert "distiller index" in flat_output(result)
+    assert "Traceback" not in result.output
+
+
+def test_ask_reports_llm_failures_without_tracebacks(
+    offline_env: Path,
+    epub_factory: Callable[..., Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """LLM failures in local and global asks become friendly errors."""
+
+    class FailingLLM:
+        @property
+        def name(self) -> str:
+            return "failing-model"
+
+        def complete(self, **kwargs: object) -> str:
+            raise ConfigurationError("endpoint down")
+
+    _prepare_thematic_inputs(epub_factory, tmp_path)
+    monkeypatch.setattr("distiller.cli.context.get_llm", lambda settings: FailingLLM())
+
+    local = runner.invoke(app, ["ask", BOOK_ID, "What happened?"])
+    assert local.exit_code != 0
+    assert "endpoint down" in flat_output(local)
+    assert "Traceback" not in local.output
+
+    global_result = runner.invoke(
+        app, ["ask", BOOK_ID, "What are the themes?", "--global"]
+    )
+    assert global_result.exit_code != 0
+    assert "endpoint down" in flat_output(global_result)
+    assert "Traceback" not in global_result.output
+
+
+def test_ask_rerank_uses_the_configured_reranker(
+    offline_env: Path,
+    epub_factory: Callable[..., Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`ask --rerank` builds the reranked pipeline when the extra is stubbed."""
+    epub_path = epub_factory(tmp_path / "lantern.epub")
+    invoke_cli(["ingest", str(epub_path)])
+    invoke_cli(["index", BOOK_ID])
+
+    class StubReranker:
+        @property
+        def name(self) -> str:
+            return "stub-reranker"
+
+        def rerank(self, query: str, items: list, top_k: int) -> list:
+            return items[:top_k]
+
+    monkeypatch.setattr(
+        "distiller.cli.context.get_reranker", lambda settings: StubReranker()
+    )
+
+    result = invoke_cli(["ask", BOOK_ID, "How many steps?", "--rerank"])
+
+    assert "Chapter One" in flat_output(result)
+
+
+def test_eval_ablation_and_train_eval_report_missing_golden(
+    offline_env: Path,
+    epub_factory: Callable[..., Path],
+    tmp_path: Path,
+) -> None:
+    """Commands that need a golden set name the file and the option."""
+    epub_path = epub_factory(tmp_path / "lantern.epub")
+    invoke_cli(["ingest", str(epub_path)])
+    invoke_cli(["index", BOOK_ID])
+
+    for arguments in (
+        ["eval", BOOK_ID],
+        ["ablation", BOOK_ID],
+        ["train-eval", BOOK_ID],
+    ):
+        result = runner.invoke(app, arguments)
+        assert result.exit_code != 0
+        assert "Golden set not found" in flat_output(result)
+        assert "Traceback" not in result.output
+
+
+def test_eval_honours_limit_and_reports_ragas_errors(
+    offline_env: Path,
+    epub_factory: Callable[..., Path],
+    tmp_path: Path,
+) -> None:
+    """`eval --limit` slices the set and `--ragas` reports the missing extra."""
+    if is_available("ragas"):
+        pytest.skip("ragas is installed in this environment")
+
+    epub_path = epub_factory(tmp_path / "lantern.epub")
+    invoke_cli(["ingest", str(epub_path)])
+    invoke_cli(["index", BOOK_ID])
+    golden_path = _write_training_golden(tmp_path)
+
+    result = invoke_cli(
+        ["eval", BOOK_ID, "--golden", str(golden_path), "--limit", "1", "--ragas"]
+    )
+
+    assert "RAGAS" in flat_output(result)
+    report = json.loads(
+        (offline_env / BOOK_ID / "eval" / "report.json").read_text(encoding="utf-8")
+    )
+    assert report["metrics"]["item_count"] == 1
+    assert "error" in report["ragas"]
+
+
+def test_train_overrides_and_register_json(
+    offline_env: Path,
+    epub_factory: Callable[..., Path],
+    tmp_path: Path,
+    adapter_factory: Callable[..., Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Seed/val-ratio overrides validate and --register --json prints the report."""
+    _prepare_training_inputs(epub_factory, tmp_path)
+
+    invoke_cli(["train", BOOK_ID, "--seed", "7"])
+    manifest = json.loads(
+        (offline_env / BOOK_ID / "training" / "manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert manifest["seed"] == 7
+    assert manifest["val_ratio"] == 0.1
+
+    invoke_cli(["train", BOOK_ID, "--val-ratio", "0.2"])
+    manifest = json.loads(
+        (offline_env / BOOK_ID / "training" / "manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert manifest["seed"] == 13
+    assert manifest["val_ratio"] == 0.2
+
+    source = adapter_factory(
+        tmp_path / "adapter-download",
+        book_id=BOOK_ID,
+        base_model="Qwen/Qwen3-4B",
+        dataset_hash=manifest["dataset_hash"],
+    )
+    result = invoke_cli(["train", BOOK_ID, "--register", str(source), "--json"])
+
+    payload = json.loads(result.output)
+    assert payload["book_id"] == BOOK_ID
+
+    golden_path = _write_training_golden(tmp_path)
+    monkeypatch.setenv("DISTILLER_ADAPTER__MODEL", "fake")
+    invoke_cli(["train-eval", BOOK_ID, "--golden", str(golden_path), "--limit", "1"])
+    report = json.loads(
+        (offline_env / BOOK_ID / "eval" / "training.json").read_text(encoding="utf-8")
+    )
+    assert report["item_count"] == 1
+
+
+def test_train_check_runtime_with_versions(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`train --check-runtime` renders the version table when available."""
+    monkeypatch.setattr(
+        "distiller.cli.main.check_training_runtime_or_fail",
+        lambda: {"torch": "2.2.0", "unsloth": "2024.12"},
+    )
+
+    result = invoke_cli(["train", "any-book", "--check-runtime"])
+
+    assert "torch" in flat_output(result)
+
+
+def test_books_on_an_empty_library(offline_env: Path) -> None:
+    """An empty artifacts directory prints the ingest hint."""
+    result = invoke_cli(["books"])
+
+    assert "No books ingested yet" in flat_output(result)
+
+
+def test_info_reports_an_unindexed_book(
+    offline_env: Path,
+    epub_factory: Callable[..., Path],
+    tmp_path: Path,
+) -> None:
+    """`info` on an ingested book without an index points at `distiller index`."""
+    epub_path = epub_factory(tmp_path / "lantern.epub")
+    invoke_cli(["ingest", str(epub_path)])
+
+    result = invoke_cli(["info", BOOK_ID])
+
+    assert "Not indexed yet" in flat_output(result)
+
+
+def test_artifacts_dir_override_is_honoured(tmp_path: Path) -> None:
+    """The global --artifacts-dir option redirects the whole CLI."""
+    custom = tmp_path / "custom-artifacts"
+
+    result = invoke_cli(["--artifacts-dir", str(custom), "books"])
+
+    assert "No books ingested yet" in flat_output(result)
+
+
+def test_gguf_registry_error_paths(
+    offline_env: Path,
+    epub_factory: Callable[..., Path],
+    tmp_path: Path,
+    gguf_factory: GgufFactory,
+) -> None:
+    """Corrupt registries fail friendly, without tracebacks."""
+    epub_path = epub_factory(tmp_path / "lantern.epub")
+    invoke_cli(["ingest", str(epub_path)])
+    invoke_cli(["index", BOOK_ID])
+    _register_fake_gguf(offline_env, tmp_path, gguf_factory)
+    gguf_dir = offline_env / BOOK_ID / "training" / "gguf"
+
+    (gguf_dir / "Modelfile").unlink()
+    result = runner.invoke(app, ["gguf", "serve", BOOK_ID])
+    assert result.exit_code != 0
+    assert "incomplete" in flat_output(result)
+    assert "Traceback" not in result.output
+
+    (gguf_dir / "Modelfile").write_text("FROM ./model.gguf", encoding="utf-8")
+    (gguf_dir / "gguf.json").write_text("{not json", encoding="utf-8")
+    result = runner.invoke(app, ["gguf", "serve", BOOK_ID])
+    assert result.exit_code != 0
+    assert "Invalid GGUF report" in flat_output(result)
+    assert "Traceback" not in result.output
+
+    (offline_env / BOOK_ID / "book.json").write_text("{not json", encoding="utf-8")
+    source = gguf_factory(tmp_path / "again.gguf")
+    result = runner.invoke(app, ["gguf", "register", BOOK_ID, str(source)])
+    assert result.exit_code != 0
+    assert "incomplete or corrupt" in flat_output(result)
+    assert "Traceback" not in result.output
+
+
+def test_gguf_register_rejects_an_invalid_file(
+    offline_env: Path,
+    epub_factory: Callable[..., Path],
+    tmp_path: Path,
+) -> None:
+    """A non-GGUF file is rejected with a friendly error."""
+    epub_path = epub_factory(tmp_path / "lantern.epub")
+    invoke_cli(["ingest", str(epub_path)])
+    bogus = tmp_path / "model.gguf"
+    bogus.write_text("not a gguf", encoding="utf-8")
+
+    result = runner.invoke(app, ["gguf", "register", BOOK_ID, str(bogus)])
+
+    assert result.exit_code != 0
+    assert "Traceback" not in result.output
+
+
+def test_gguf_register_tolerates_a_corrupt_adapter_registry(
+    offline_env: Path,
+    epub_factory: Callable[..., Path],
+    tmp_path: Path,
+    gguf_factory: GgufFactory,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An unreadable adapter registry is ignored when registering a GGUF."""
+    epub_path = epub_factory(tmp_path / "lantern.epub")
+    invoke_cli(["ingest", str(epub_path)])
+    adapter_dir = offline_env / BOOK_ID / "training" / "adapter"
+    adapter_dir.mkdir(parents=True)
+    (adapter_dir / "run.json").write_text("{not json", encoding="utf-8")
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        "distiller.cli.context.logger.warning",
+        lambda message, *args: warnings.append(message % args),
+    )
+
+    _register_fake_gguf(offline_env, tmp_path, gguf_factory)
+
+    assert any("Ignoring unreadable adapter registry" in text for text in warnings)
+
+
+def test_synth_reports_missing_and_corrupt_artifacts(
+    offline_env: Path,
+    epub_factory: Callable[..., Path],
+    tmp_path: Path,
+) -> None:
+    """`synth` names the missing command and rejects corrupt book artifacts."""
+    result = runner.invoke(app, ["synth", "no-such-book"])
+    assert result.exit_code != 0
+    assert "distiller ingest" in flat_output(result)
+
+    epub_path = epub_factory(tmp_path / "lantern.epub")
+    invoke_cli(["ingest", str(epub_path)])
+    invoke_cli(["index", BOOK_ID])
+    (offline_env / BOOK_ID / "book.json").write_text("{not json", encoding="utf-8")
+
+    result = runner.invoke(app, ["synth", BOOK_ID])
+
+    assert result.exit_code != 0
+    assert "incomplete or corrupt" in flat_output(result)
+    assert "Traceback" not in result.output
+
+
+def test_train_error_paths_for_corrupt_artifacts(
+    offline_env: Path,
+    epub_factory: Callable[..., Path],
+    tmp_path: Path,
+    adapter_factory: Callable[..., Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Corrupt RAFT/qlora/manifest artifacts error or degrade with warnings."""
+    _prepare_training_inputs(epub_factory, tmp_path)
+    invoke_cli(["train", BOOK_ID])
+
+    raft_path = offline_env / BOOK_ID / "dataset" / "raft.jsonl"
+    raft_text = raft_path.read_text(encoding="utf-8")
+    raft_path.write_text("{not json\n", encoding="utf-8")
+    result = runner.invoke(app, ["train", BOOK_ID])
+    assert result.exit_code != 0
+    assert "Traceback" not in result.output
+    raft_path.write_text(raft_text, encoding="utf-8")
+
+    source = adapter_factory(
+        tmp_path / "adapter-download",
+        book_id=BOOK_ID,
+        base_model="Qwen/Qwen3-4B",
+    )
+    qlora_path = offline_env / BOOK_ID / "training" / "qlora.json"
+    qlora_text = qlora_path.read_text(encoding="utf-8")
+    qlora_path.write_text("{not json", encoding="utf-8")
+    result = runner.invoke(app, ["train", BOOK_ID, "--register", str(source)])
+    assert result.exit_code != 0
+    assert "unreadable" in flat_output(result)
+    assert "Traceback" not in result.output
+    qlora_path.write_text(qlora_text, encoding="utf-8")
+
+    manifest_path = offline_env / BOOK_ID / "training" / "manifest.json"
+    manifest_path.unlink()
+    invoke_cli(["train", BOOK_ID, "--register", str(source)])
+
+    manifest_path.write_text("{not json", encoding="utf-8")
+    warnings: list[str] = []
+    monkeypatch.setattr(
+        "distiller.cli.context.logger.warning",
+        lambda message, *args: warnings.append(message % args),
+    )
+    invoke_cli(["train", BOOK_ID, "--register", str(source)])
+
+    assert any("Ignoring unreadable training manifest" in text for text in warnings)
+
+
+def test_eval_global_rejects_a_corrupt_manifest(
+    offline_env: Path,
+    epub_factory: Callable[..., Path],
+    tmp_path: Path,
+) -> None:
+    """A corrupt thematic manifest fails actionably for eval --global."""
+    golden_path = _prepare_thematic_inputs(epub_factory, tmp_path)
+    manifest_path = offline_env / BOOK_ID / "thematic" / "manifest.json"
+    manifest_path.write_text("{not json", encoding="utf-8")
+
+    result = runner.invoke(
+        app, ["eval", BOOK_ID, "--golden", str(golden_path), "--global"]
+    )
+
+    assert result.exit_code != 0
+    assert "distiller tree build" in flat_output(result)
+    assert "Traceback" not in result.output
+
+
+def test_eval_reports_a_malformed_golden_set(
+    offline_env: Path,
+    epub_factory: Callable[..., Path],
+    tmp_path: Path,
+) -> None:
+    """A golden file that fails validation is rejected with the reason."""
+    epub_path = epub_factory(tmp_path / "lantern.epub")
+    invoke_cli(["ingest", str(epub_path)])
+    invoke_cli(["index", BOOK_ID])
+    golden_path = tmp_path / "empty-golden.yaml"
+    golden_path.write_text("items: []\n", encoding="utf-8")
+
+    result = runner.invoke(app, ["eval", BOOK_ID, "--golden", str(golden_path)])
+
+    assert result.exit_code != 0
+    assert "Invalid golden set" in flat_output(result)
+    assert "Traceback" not in result.output
+
+
+def test_ask_reports_a_corrupt_adapter_registry(
+    offline_env: Path,
+    epub_factory: Callable[..., Path],
+    tmp_path: Path,
+) -> None:
+    """A corrupt adapter run.json is reported without a traceback."""
+    epub_path = epub_factory(tmp_path / "lantern.epub")
+    invoke_cli(["ingest", str(epub_path)])
+    invoke_cli(["index", BOOK_ID])
+    adapter_dir = offline_env / BOOK_ID / "training" / "adapter"
+    adapter_dir.mkdir(parents=True)
+    (adapter_dir / "run.json").write_text("{not json", encoding="utf-8")
+
+    result = runner.invoke(app, ["ask", BOOK_ID, "What happened?", "--adapter"])
+
+    assert result.exit_code != 0
+    assert "Traceback" not in result.output
+
+
+def test_info_rejects_an_unknown_book(offline_env: Path) -> None:
+    """`info` on an unknown book id fails actionably."""
+    result = runner.invoke(app, ["info", "no-such-book"])
+
+    assert result.exit_code != 0
+    assert "Unknown book" in flat_output(result)
+    assert "Traceback" not in result.output

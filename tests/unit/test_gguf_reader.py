@@ -80,3 +80,69 @@ def test_rejects_absurd_string_lengths(tmp_path: Path) -> None:
 
     with pytest.raises(GGUFError, match=r"huge\.gguf.*string"):
         read_gguf(path)
+
+
+def test_rejects_unknown_metadata_types_and_huge_arrays(tmp_path: Path) -> None:
+    """Unknown value types and absurd array lengths fail with the key named."""
+    unknown = b"GGUF" + struct.pack("<I", 3)
+    unknown += struct.pack("<QQ", 0, 1)
+    key = b"odd.key"
+    unknown += struct.pack("<Q", len(key)) + key
+    unknown += struct.pack("<I", 99)  # no such metadata type
+    unknown_path = tmp_path / "odd.gguf"
+    unknown_path.write_bytes(unknown)
+
+    with pytest.raises(GGUFError, match="unknown metadata type 99"):
+        read_gguf(unknown_path)
+
+    huge = b"GGUF" + struct.pack("<I", 3)
+    huge += struct.pack("<QQ", 0, 1)
+    array_key = b"odd.array"
+    huge += struct.pack("<Q", len(array_key)) + array_key
+    huge += struct.pack("<I", 9)  # array value type
+    huge += struct.pack("<I", 8)  # string element type
+    huge += struct.pack("<Q", 1 << 62)  # absurd declared length
+    huge_path = tmp_path / "huge-array.gguf"
+    huge_path.write_bytes(huge)
+
+    with pytest.raises(GGUFError, match=r"odd\.array"):
+        read_gguf(huge_path)
+
+
+def test_rejects_tensors_with_too_many_dimensions(
+    tmp_path: Path, gguf_factory: GgufFactory
+) -> None:
+    """A tensor declaring more than four dimensions is rejected."""
+    path = gguf_factory(
+        tmp_path / "five-d.gguf", tensors=[("a.weight", (1, 1, 1, 1, 1))]
+    )
+
+    with pytest.raises(GGUFError, match="dimensions"):
+        read_gguf(path)
+
+
+def test_reads_a_gguf_without_a_file_type(
+    tmp_path: Path, gguf_factory: GgufFactory
+) -> None:
+    """A missing file type yields no quantization label."""
+    path = gguf_factory(tmp_path / "no-type.gguf", file_type=None)
+
+    metadata = read_gguf(path)
+
+    assert metadata.file_type is None
+    assert metadata.quantization is None
+
+
+def test_int_or_none_rejects_booleans() -> None:
+    """Booleans are not integers for GGUF file-type purposes."""
+    from distiller.gguf.reader import _int_or_none
+
+    assert _int_or_none(True) is None
+    assert _int_or_none(15) == 15
+    assert _int_or_none("15") is None
+
+
+def test_read_gguf_reports_unreadable_paths(tmp_path: Path) -> None:
+    """A directory in place of a file fails with a readable error."""
+    with pytest.raises(GGUFError, match="Could not read GGUF file"):
+        read_gguf(tmp_path)

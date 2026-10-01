@@ -80,6 +80,24 @@ def test_register_rejects_invalid_file_without_copying(tmp_path: Path) -> None:
     assert not destination.exists()
 
 
+def test_register_skips_copying_the_registered_file_onto_itself(
+    tmp_path: Path, gguf_factory: GgufFactory
+) -> None:
+    """Registering the registry's own model.gguf keeps the file in place."""
+    source = gguf_factory(tmp_path / "model.gguf")
+    destination = tmp_path / "gguf"
+    register_gguf(source, destination, book_id="book", book_title="Book")
+
+    report = register_gguf(
+        destination / "model.gguf",
+        destination,
+        book_id="book",
+        book_title="Book",
+    )
+
+    assert report.source_file == "model.gguf"
+
+
 def test_register_honours_the_model_name_and_adapter_identity(
     tmp_path: Path, gguf_factory: GgufFactory
 ) -> None:

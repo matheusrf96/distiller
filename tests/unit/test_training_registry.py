@@ -45,6 +45,22 @@ def test_register_adapter_copies_and_validates(
     assert written["hardware"] == "Tesla T4"
 
 
+def test_register_adapter_skips_copying_onto_itself(
+    tmp_path: Path, adapter_factory: AdapterFactory
+) -> None:
+    """Registering an adapter directory in place skips the copy step."""
+    source = adapter_factory(tmp_path / "adapter")
+
+    report = register_adapter(
+        source,
+        source,
+        book_id="the-lantern-keeper",
+        expected_base_model="Qwen/Qwen3-4B",
+    )
+
+    assert report.book_id == "the-lantern-keeper"
+
+
 def test_register_records_a_dataset_hash_mismatch(
     tmp_path: Path, adapter_factory: AdapterFactory
 ) -> None:

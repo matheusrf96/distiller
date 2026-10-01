@@ -10,7 +10,7 @@ from distiller.config import ThematicSettings
 from distiller.indexing.embedder import HashingEmbedder
 from distiller.llm.fake import FakeLLM
 from distiller.models import refusal_text
-from distiller.thematic import GlobalPipeline
+from distiller.thematic import GlobalPipeline, extract_summary_citations
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -174,3 +174,17 @@ def test_reduce_strips_map_citation_markers(
     assert "Partial from a summary" in prompts[2]
     assert [citation.index for citation in answer.summary_citations] == [2]
     assert answer.summary_citations[0].node_id == selected[1].id
+
+
+def test_extract_summary_citations_ignores_out_of_range_markers(
+    corpus_factory: CorpusFactory,
+    tree_factory: TreeFactory,
+) -> None:
+    """Markers beyond the selected nodes are dropped."""
+    book, chunks = corpus_factory()
+    tree = tree_factory(book, chunks)
+    nodes = [node for node in tree.nodes if node.level == 1]
+
+    citations = extract_summary_citations("Answer [1] and [9].", nodes)
+
+    assert [citation.index for citation in citations] == [1]

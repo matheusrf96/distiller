@@ -7,7 +7,7 @@ from typing import TYPE_CHECKING
 
 import pytest
 
-from distiller.config import GgufSettings, LLMSettings, Settings
+from distiller.config import AdapterSettings, GgufSettings, LLMSettings, Settings
 from distiller.exceptions import (
     BookNotFoundError,
     ConfigurationError,
@@ -15,7 +15,7 @@ from distiller.exceptions import (
     MissingDependencyError,
 )
 from distiller.ingest import ingest_book
-from distiller.llm import get_gguf_llm, get_llm
+from distiller.llm import get_adapter_llm, get_gguf_llm, get_llm
 from distiller.llm.fake import FakeLLM
 from distiller.llm.openai_compat import OpenAICompatClient, client_from_settings
 from distiller.optional_deps import is_available
@@ -75,6 +75,27 @@ def test_fake_llm_refuses_without_documents() -> None:
     answer = FakeLLM(book_title="The Book").complete(system="s", user="Question: q?")
 
     assert answer == "I couldn't find that in The Book."
+
+
+def test_fake_llm_truncates_long_document_snippets() -> None:
+    """Documents longer than 240 chars are truncated with an ellipsis."""
+    long_text = " ".join(f"word{index}" for index in range(80))
+    user = f'<doc id="1" chapter="One">\n{long_text}\n</doc>'
+
+    answer = FakeLLM().complete(system="s", user=user)
+
+    assert answer.endswith("[1]")
+    assert "…" in answer
+
+
+def test_get_adapter_llm_builds_a_client_from_settings() -> None:
+    """A real adapter model name builds the OpenAI-compatible client."""
+    settings = Settings(adapter=AdapterSettings(model="the-book-lora"))
+
+    client = get_adapter_llm(settings)
+
+    assert isinstance(client, OpenAICompatClient)
+    assert client.name.endswith("the-book-lora")
 
 
 def test_get_llm_selects_fake_or_client() -> None:

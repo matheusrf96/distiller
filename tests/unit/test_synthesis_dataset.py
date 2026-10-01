@@ -2,14 +2,18 @@
 
 from __future__ import annotations
 
+import logging
 from typing import TYPE_CHECKING, Any
 
 from distiller.config import SynthesisSettings
 from distiller.llm.fake import FakeLLM
-from distiller.synthesis.dataset import sample_chunks, synthesize
+from distiller.synthesis.dataset import load_cached_pairs, sample_chunks, synthesize
 
 if TYPE_CHECKING:
     from collections.abc import Callable
+    from pathlib import Path
+
+    import pytest
 
     from distiller.models import BookDocument, Chunk
 
@@ -132,3 +136,16 @@ def test_manifest_records_index_identity_and_config(
     assert run.manifest.index == {"embedder": "hash:64", "contextual": True}
     assert run.manifest.config["questions_per_chunk"] == 1
     assert run.manifest.config["seed"] == 9
+
+
+def test_load_cached_pairs_ignores_corrupt_caches(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A corrupt QA cache is ignored with a warning and regenerates."""
+    cache = tmp_path / "qa.jsonl"
+    cache.write_text("{not json\n", encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING):
+        assert load_cached_pairs(cache) is None
+
+    assert "Ignoring unreadable QA cache" in caplog.text

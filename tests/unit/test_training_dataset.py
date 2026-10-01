@@ -14,6 +14,7 @@ from distiller.models import refusal_text
 from distiller.paths import BookPaths
 from distiller.training.chat import ChatMessage, TrainingExample, prompt_contract_hash
 from distiller.training.dataset import (
+    load_raft_examples,
     prepare_dataset,
     split_examples,
     validate_examples,
@@ -284,3 +285,49 @@ def test_prepare_writes_nothing_when_validation_fails(
     with pytest.raises(TrainingError, match=r"chunks\.jsonl"):
         prepare_dataset(book, [broken], chunks, TrainingSettings(seed=3), paths=paths)
     assert not paths.training_dir.exists()
+
+
+def test_load_raft_examples_reports_missing_and_corrupt_files(
+    tmp_path: Path,
+) -> None:
+    """Missing and corrupt RAFT files raise TrainingError with next steps."""
+    with pytest.raises(TrainingError, match="distiller synth"):
+        load_raft_examples(tmp_path / "missing.jsonl")
+
+    corrupt = tmp_path / "raft.jsonl"
+    corrupt.write_text("{not json\n", encoding="utf-8")
+    with pytest.raises(TrainingError, match="unreadable or corrupt"):
+        load_raft_examples(corrupt)
+
+
+def test_split_examples_handles_an_empty_list() -> None:
+    """An empty dataset splits into two empty halves."""
+    assert split_examples([], seed=1, val_ratio=0.1) == ([], [])
+
+
+def test_validation_flags_an_example_without_messages() -> None:
+    """An example with no messages is a validation error."""
+    example = TrainingExample(
+        id="silent", book_id="book", question="q?", messages=[], answerable=True
+    )
+
+    report = validate_examples([example], BOOK_TITLE)
+
+    assert any("no messages" in error for error in report.errors)
+
+
+def test_prepare_without_paths_returns_the_bundle(
+    corpus_factory: CorpusFactory,
+    raft_factory: RaftFactory,
+) -> None:
+    """Preparing without paths returns the bundle without writing artifacts."""
+    book, chunks = corpus_factory()
+    examples = [
+        raft_factory(chunks, suffix="0", question="q0?"),
+        raft_factory(chunks, suffix="1", question="q1?", answerable=False),
+    ]
+
+    bundle = prepare_dataset(book, examples, chunks, TrainingSettings(seed=3))
+
+    assert bundle.manifest.train_count + bundle.manifest.validation_count == 2
+    assert bundle.manifest.book_id == book.book_id

@@ -124,6 +124,26 @@ def test_enricher_generates_and_persists_contexts(tmp_path: Path) -> None:
     assert {row["chunk_id"] for row in rows} == {chunk.id for chunk in chunks}
 
 
+def test_enricher_tolerates_an_unwritable_cache(
+    tmp_path: Path, caplog: pytest.LogCaptureFixture
+) -> None:
+    """A cache write failure is logged and the run still returns contexts."""
+    book = build_book()
+    chunks = build_chunks(book)
+    blocker = tmp_path / "blocker"
+    blocker.write_text("file, not a directory", encoding="utf-8")
+
+    with caplog.at_level(logging.WARNING):
+        enriched = ContextualEnricher(
+            StubLLM(response="A storm scene."),
+            book,
+            cache_path=blocker / "enrichment.jsonl",
+        ).enrich(chunks)
+
+    assert all(chunk.context == "A storm scene." for chunk in enriched)
+    assert "Could not write enrichment cache" in caplog.text
+
+
 def test_enricher_reuses_cache_without_calling_the_llm(tmp_path: Path) -> None:
     """A second run over the same chunks performs no LLM calls (REQ-CR-003)."""
     book = build_book()

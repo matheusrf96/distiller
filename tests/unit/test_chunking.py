@@ -124,3 +124,91 @@ def test_heading_path_is_tracked() -> None:
 
     assert chunks
     assert "Deep Section" in chunks[0].heading_path
+
+
+def test_empty_chapters_and_blank_blocks_are_skipped() -> None:
+    """Chapters with only blank blocks produce no chunks."""
+    book = BookDocument(
+        book_id="blank",
+        title="Blank",
+        source_path="b.txt",
+        source_format="txt",
+        chapters=[
+            Chapter(title="Empty", blocks=[Block(type="paragraph", text="   ")]),
+            Chapter(title="Real", blocks=[Block(type="paragraph", text="Content.")]),
+        ],
+    )
+    chunks = chunk_document(
+        book, ChunkingSettings(target_chars=100, overlap_chars=0, max_chars=200)
+    )
+
+    assert [chunk.chapter for chunk in chunks] == ["Real"]
+
+
+def test_chunker_flushes_early_to_respect_max_chars() -> None:
+    """A piece that would exceed max_chars flushes early with a bounded carry."""
+    book = BookDocument(
+        book_id="flush",
+        title="Flush",
+        source_path="f.txt",
+        source_format="txt",
+        chapters=[
+            Chapter(
+                title="One",
+                blocks=[
+                    Block(type="paragraph", text="A" * 60),
+                    Block(type="paragraph", text="B" * 70),
+                ],
+            )
+        ],
+    )
+    chunks = chunk_document(
+        book, ChunkingSettings(target_chars=100, overlap_chars=0, max_chars=120)
+    )
+
+    assert chunks
+    assert all(chunk.char_count <= 120 for chunk in chunks)
+
+
+def test_packer_skips_blank_pieces() -> None:
+    """A buffer that joins to blank text produces no chunk."""
+    from distiller.chunking.structural import _ChapterPacker, _Piece
+
+    book = build_book()
+    settings = ChunkingSettings(target_chars=100, overlap_chars=0, max_chars=200)
+    packer = _ChapterPacker(book, book.chapters[0], settings, start_ordinal=0)
+    packer.feed(_Piece(text="", heading_path=(), page=None, start=0, end=0))
+
+    assert packer.finish() == []
+
+
+def test_split_oversized_prefers_newlines_and_hard_cuts() -> None:
+    """Oversized text splits at newlines, spaces, or a hard cut as a last resort."""
+    from distiller.chunking.structural import _split_oversized
+
+    assert _split_oversized("x" * 30 + "\n" + "y" * 40, 50) == ["x" * 30, "y" * 40]
+    assert _split_oversized("a" * 60 + " " + "b" * 20, 50) == [
+        "a" * 50,
+        "a" * 10 + " " + "b" * 20,
+    ]
+    assert _split_oversized("a" * 50 + "   ", 50) == ["a" * 50]
+
+
+def test_heading_stack_pops_on_same_or_shallower_headings() -> None:
+    """A new heading at the same level pops the previous deeper headings."""
+    from distiller.chunking.structural import _chapter_pieces
+
+    chapter = Chapter(
+        title="One",
+        blocks=[
+            Block(type="heading", text="One", level=1),
+            Block(type="heading", text="Deep", level=2),
+            Block(type="heading", text="Deeper", level=3),
+            Block(type="heading", text="Next", level=2),
+            Block(type="paragraph", text="Body."),
+        ],
+    )
+
+    pieces = _chapter_pieces(chapter, start_offset=0, max_chars=1000)
+
+    assert pieces[-1].heading_path == ("One", "Next")

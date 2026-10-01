@@ -86,7 +86,7 @@ class AnsweringPipeline(Protocol):
 
     def ask(self, question: str) -> Answer:
         """Answer one question about the book."""
-        ...
+        ...  # pragma: no cover - protocol stub
 
 
 app = typer.Typer(

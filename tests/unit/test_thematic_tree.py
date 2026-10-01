@@ -291,3 +291,63 @@ def test_thematic_questions_doc_documents_the_workflow() -> None:
     assert "eval --global" in doc
     assert "expected_answer_contains" in doc
     assert "thematic-questions.md" in index
+
+
+def test_build_tree_rejects_books_without_chunks_or_chapters(
+    corpus_factory: CorpusFactory,
+) -> None:
+    """Empty inputs fail with actionable ThematicError messages."""
+    book, chunks = corpus_factory()
+
+    with pytest.raises(ThematicError, match="no chunks"):
+        build_tree(book, [], FakeLLM(), ThematicSettings())
+
+    empty_book = book.model_copy(update={"chapters": []})
+    with pytest.raises(ThematicError, match="no chapters"):
+        build_tree(empty_book, chunks, FakeLLM(), ThematicSettings())
+
+
+def test_tree_root_property_guards_missing_root() -> None:
+    """The root property raises when validation was bypassed."""
+    tree = SummaryTree.model_construct(book_id="b", root_id="missing", nodes=[])
+
+    with pytest.raises(ValueError, match="no root node"):
+        _ = tree.root
+
+
+def test_load_manifest_reports_a_missing_file(tmp_path: Path) -> None:
+    """A missing manifest names the tree build command."""
+    with pytest.raises(ThematicError, match="distiller tree build"):
+        load_manifest(tmp_path / "missing.json")
+
+
+def test_window_summary_failure_is_recorded_and_retried(
+    corpus_factory: CorpusFactory,
+    tmp_path: Path,
+) -> None:
+    """A failed window is skipped, recorded and retried on rebuild."""
+    book, chunks = corpus_factory()
+    settings = ThematicSettings(window_size=2)
+    cache = tmp_path / "summaries.jsonl"
+
+    def flaky(user: str) -> str:
+        if "Chapters 1-2" in user:
+            raise RuntimeError("window backend down")
+        return source_summary(user)
+
+    first = build_tree(
+        book, chunks, FakeLLM(response=flaky), settings, cache_path=cache
+    )
+
+    failed_id = window_node_id(book.book_id, 1, 2)
+    assert first.manifest.failed_node_ids == [failed_id]
+    window = next(node for node in first.tree.nodes if node.id == failed_id)
+    assert window.summary is None
+    assert first.tree.root.summary is not None
+
+    second = build_tree(
+        book, chunks, FakeLLM(response=source_summary), settings, cache_path=cache
+    )
+
+    assert second.manifest.failed_node_ids == []
+    assert all(node.summary for node in second.tree.nodes)

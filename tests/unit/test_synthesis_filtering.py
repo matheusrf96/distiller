@@ -121,3 +121,14 @@ def test_rejects_pairs_that_are_too_short(corpus_factory: CorpusFactory) -> None
     outcome = filter_pairs([pair], chunks_by_id={c.id: c for c in chunks})
 
     assert outcome.rejected[0].reason == "too short"
+
+
+def test_rejects_pairs_whose_chunk_is_missing(corpus_factory: CorpusFactory) -> None:
+    """A pair whose chunk id is unknown is rejected (REQ-SQ-005)."""
+    _, chunks = corpus_factory()
+    pair = build_pair(chunks[1])
+
+    outcome = filter_pairs([pair], chunks_by_id={})
+
+    assert outcome.kept == []
+    assert outcome.rejected[0].reason == "no verified quotes"

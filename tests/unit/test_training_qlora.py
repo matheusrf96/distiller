@@ -60,3 +60,21 @@ def test_harness_imports_without_the_training_stack() -> None:
 
     heavy = {"torch", "unsloth", "trl", "peft", "transformers"} & set(sys.modules)
     assert not heavy, f"the training harness imported the heavy stack: {sorted(heavy)}"
+
+
+def test_training_stack_versions_with_stubbed_modules(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Versions are collected when every module loads."""
+
+    class StubModule:
+        __version__ = "1.2.3"
+
+    monkeypatch.setattr(
+        "distiller.training.qlora.require", lambda name, **kwargs: StubModule
+    )
+
+    versions = training_stack_versions()
+
+    assert set(versions) == set(TRAINING_MODULES)
+    assert versions[TRAINING_MODULES[0]] == "1.2.3"

@@ -25,13 +25,13 @@ _TOKEN = re.compile(r"\w+", re.UNICODE)
 @runtime_checkable
 class Embedder(Protocol):
     @property
-    def name(self) -> str: ...
+    def name(self) -> str: ...  # pragma: no cover - protocol stub
 
     @property
-    def dim(self) -> int: ...
+    def dim(self) -> int: ...  # pragma: no cover - protocol stub
 
-    def embed_documents(self, texts: list[str]) -> np.ndarray: ...
-    def embed_query(self, text: str) -> np.ndarray: ...
+    def embed_documents(self, texts: list[str]) -> np.ndarray: ...  # pragma: no cover
+    def embed_query(self, text: str) -> np.ndarray: ...  # pragma: no cover
 
 
 class HashingEmbedder:
