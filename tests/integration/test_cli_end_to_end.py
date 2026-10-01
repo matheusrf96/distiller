@@ -155,6 +155,14 @@ def test_contextual_index_end_to_end(
     assert report["index"]["contextual"] is True
     assert report["index"]["embedder"] == "hash:512"
 
+    # --no-contextual resets the flags on a fresh build (AC8)
+    invoke_cli(["index", BOOK_ID, "--no-contextual"])
+    reset = json.loads(
+        (offline_env / BOOK_ID / "index" / "metadata.json").read_text(encoding="utf-8")
+    )
+    assert reset["contextual"] is False
+    assert reset["enriched_chunks"] == 0
+
 
 def _prepare_ablation_inputs(
     epub_factory: Callable[..., Path],
@@ -252,6 +260,26 @@ def test_ablation_command_runs_rerank_variants_with_sweep(
 
     json_result = invoke_cli([*arguments, "--json"])
     assert json.loads(json_result.output)["variants"] == payload["variants"]
+
+
+def test_ablation_command_honours_limit(
+    offline_env: Path,
+    epub_factory: Callable[..., Path],
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    """--limit evaluates the same first N questions in every variant (REQ-RA-008)."""
+    monkeypatch.setattr("distiller.cli.context.is_available", lambda module: False)
+    arguments = _prepare_ablation_inputs(epub_factory, tmp_path)
+    arguments += ["--limit", "1"]
+
+    invoke_cli(arguments)
+
+    report = json.loads(
+        (offline_env / BOOK_ID / "eval" / "ablation.json").read_text(encoding="utf-8")
+    )
+    assert report["item_count"] == 1
+    assert report["variants"][0]["metrics"]["item_count"] == 1
 
 
 def test_synth_command_end_to_end(

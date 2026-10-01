@@ -195,3 +195,30 @@ def test_parse_top_k_values() -> None:
         parse_top_k_values("0")
     with pytest.raises(typer.BadParameter):
         parse_top_k_values(",")
+
+
+def test_build_ablation_runs_does_not_mutate_settings(monkeypatch) -> None:
+    """Variant overrides are copies; global settings stay untouched (REQ-RA-005)."""
+    from types import SimpleNamespace
+
+    from distiller.cli.context import build_ablation_runs
+    from distiller.config import Settings
+
+    settings = Settings()
+    settings.retrieval = settings.retrieval.model_copy(update={"top_k_final": 7})
+    before = settings.retrieval.model_dump()
+
+    bundle = SimpleNamespace(book=SimpleNamespace(title="Book"))
+    monkeypatch.setattr("distiller.cli.context.is_available", lambda module: False)
+    variants = [
+        AblationVariant(name="hybrid", rerank=False, top_k_final=7),
+        AblationVariant(
+            name="hybrid+rerank", rerank=True, top_k_final=3, rerank_pool=9
+        ),
+    ]
+
+    runs = build_ablation_runs(settings, bundle, variants)  # type: ignore[arg-type]
+
+    assert settings.retrieval.model_dump() == before
+    assert runs[0].answer is not None
+    assert runs[1].skipped_reason is not None
