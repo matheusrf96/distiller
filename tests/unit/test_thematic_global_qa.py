@@ -143,3 +143,34 @@ def test_global_ask_refuses_when_no_summary_is_available(
     assert answer.text == refusal_text(book.title)
     assert answer.summary_citations == []
     assert answer.mode == "global"
+
+
+def test_reduce_strips_map_citation_markers(
+    corpus_factory: CorpusFactory,
+    tree_factory: TreeFactory,
+) -> None:
+    """Internal [1] markers from map partials never reach the reduce prompt (AC8)."""
+    book, chunks = corpus_factory()
+    tree = tree_factory(book, chunks, window_size=2)
+    prompts: list[str] = []
+
+    def respond(user: str) -> str:
+        prompts.append(user)
+        if "Partial answers:" in user:
+            return "Final answer [2]"
+        return "Partial from a summary [1]"
+
+    pipeline = GlobalPipeline(
+        tree,
+        FakeLLM(response=respond),
+        ThematicSettings(map_top_k=2),
+        embedder=HashingEmbedder(dim=128),
+    )
+    answer = pipeline.ask(QUESTION)
+    selected = pipeline.select(QUESTION)
+
+    assert len(prompts) == 3
+    assert "[1]" not in prompts[2]
+    assert "Partial from a summary" in prompts[2]
+    assert [citation.index for citation in answer.summary_citations] == [2]
+    assert answer.summary_citations[0].node_id == selected[1].id

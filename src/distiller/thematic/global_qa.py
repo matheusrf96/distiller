@@ -143,9 +143,12 @@ class GlobalPipeline:
     def _reduce(
         self, question: str, nodes: list[SummaryNode], partials: list[str]
     ) -> str:
+        # A map partial cites its own single document as [1]; strip those markers
+        # so every [n] in the final answer refers to a selected node.
+        clean_partials = [_CITATION_RE.sub("", partial) for partial in partials]
         return self.llm.complete(
             system=build_system_prompt(self.book_title),
-            user=build_reduce_prompt(question, nodes, partials),
+            user=build_reduce_prompt(question, nodes, clean_partials),
             max_tokens=self.max_tokens,
         )
 

@@ -79,8 +79,9 @@ Global answering:
    a loadable index it maps every chapter summary in reading order.
 2. **Maps** — one partial answer per selected summary, using the same system
    prompt, `<doc>` evidence blocks and refusal sentence as local answers.
-3. **Reduces** — combines the partial answers into one final answer and maps its
-   `[n]` markers back to node ids and titles (`Answer.summary_citations`,
+3. **Reduces** — strips each partial's internal `[1]` marker (it cites its own
+   single map document), combines the partials into one final answer and maps
+   its `[n]` markers back to node ids and titles (`Answer.summary_citations`,
    `Answer.mode == "global"`).
 
 The CLI prints a Sources table naming the cited nodes:
