@@ -5,7 +5,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from distiller.training.notebook import RUNBOOK_PATH, emit_notebook
+from distiller.training.notebook import (
+    GGUF_RUNBOOK_PATH,
+    RUNBOOK_PATH,
+    emit_notebook,
+)
 from distiller.training.qlora import QLoRAConfig
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
@@ -42,6 +46,17 @@ def test_emit_notebook_is_valid_json_with_expected_cells() -> None:
         RUNBOOK_PATH,
     ):
         assert needle in sources, f"missing {needle!r} in the emitted notebook"
+
+
+def test_emit_notebook_exports_a_q4_k_m_gguf() -> None:
+    """The notebook merges the adapter and exports a Q4_K_M GGUF (REQ-GG-011)."""
+    notebook = emit_notebook(QLoRAConfig(), book_id="the-lantern-keeper")
+
+    payload = json.loads(json.dumps(notebook))
+    sources = "\n".join("".join(cell["source"]) for cell in payload["cells"])
+    assert "save_pretrained_gguf" in sources
+    assert 'quantization_method="q4_k_m"' in sources
+    assert GGUF_RUNBOOK_PATH in sources
 
 
 def test_qlora_runbook_documents_the_manual_steps() -> None:

@@ -13,8 +13,9 @@ if TYPE_CHECKING:
     from .qlora import QLoRAConfig
 
 RUNBOOK_PATH = "docs/qlora-runbook.md"
+GGUF_RUNBOOK_PATH = "docs/gguf-runbook.md"
 
-__all__ = ["RUNBOOK_PATH", "emit_notebook"]
+__all__ = ["GGUF_RUNBOOK_PATH", "RUNBOOK_PATH", "emit_notebook"]
 
 
 def _code(source: str) -> dict[str, Any]:
@@ -68,7 +69,10 @@ Base model `{config.base_model}`, LoRA rank {config.lora_rank}, {config.epochs}
 epochs. Every hyperparameter is read from `qlora.json`.
 
 Manual steps (upload, train, download, register, compare):
-`{runbook_path}`."""
+`{runbook_path}`.
+
+The last cell also merges the adapter and exports a Q4_K_M GGUF; follow
+`{GGUF_RUNBOOK_PATH}` to download and serve it locally."""
         ),
         _code(
             """# 1. Install the training stack. Unsloth pins its own torch/CUDA build.
@@ -174,6 +178,13 @@ adapter_dir = pathlib.Path("adapter")
 adapter_dir.mkdir(parents=True, exist_ok=True)
 (adapter_dir / "run.json").write_text(json.dumps(report, indent=2), encoding="utf-8")
 print(f"Wrote {adapter_dir / 'run.json'}")
+"""
+        ),
+        _code(
+            f"""# 8. Merge the adapter and export a Q4_K_M GGUF for local serving.
+# Download the gguf/ folder afterwards and follow `{GGUF_RUNBOOK_PATH}`.
+model.save_pretrained_gguf("gguf", tokenizer, quantization_method="q4_k_m")
+print("GGUF written to gguf/ (see docs/gguf-runbook.md)")
 """
         ),
     ]

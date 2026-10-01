@@ -50,15 +50,18 @@ class GeneratorVariant(DomainModel):
 
     Attributes:
         name: Short variant name used in reports and tables.
-        kind: ``base`` for the unmodified model, ``adapter`` for the fine-tune.
+        kind: ``base`` for the unmodified model, ``adapter`` for the fine-tune,
+            ``gguf`` for the served quantized export.
         model: Model identifier reported by the client.
         adapter: Adapter provenance (run.json identity), empty for the base.
+        gguf: GGUF provenance (file hash, quantization, ...), empty otherwise.
     """
 
     name: str
-    kind: Literal["base", "adapter"]
+    kind: Literal["base", "adapter", "gguf"]
     model: str
     adapter: dict[str, Any] = Field(default_factory=dict)
+    gguf: dict[str, Any] = Field(default_factory=dict)
 
 
 @dataclass(frozen=True, slots=True)
