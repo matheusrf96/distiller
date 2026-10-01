@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
+import socket
 from typing import TYPE_CHECKING
 
 import pytest
 
-from distiller.config import LLMSettings, Settings
-from distiller.exceptions import BookNotFoundError, IngestError, MissingDependencyError
+from distiller.config import GgufSettings, LLMSettings, Settings
+from distiller.exceptions import (
+    BookNotFoundError,
+    ConfigurationError,
+    IngestError,
+    MissingDependencyError,
+)
 from distiller.ingest import ingest_book
-from distiller.llm import get_llm
+from distiller.llm import get_gguf_llm, get_llm
 from distiller.llm.fake import FakeLLM
 from distiller.llm.openai_compat import OpenAICompatClient, client_from_settings
 from distiller.optional_deps import is_available
@@ -83,6 +89,21 @@ def test_get_llm_selects_fake_or_client() -> None:
     assert client.base_url == "http://localhost:11434/v1"
 
 
+def test_get_gguf_llm_selects_fake_or_client() -> None:
+    """The GGUF factory resolves the sentinel, name and endpoint (AC5)."""
+    assert isinstance(get_gguf_llm(GgufSettings(), "fake"), FakeLLM)
+
+    with pytest.raises(ConfigurationError, match="DISTILLER_GGUF__BASE_URL"):
+        get_gguf_llm(GgufSettings(), "distiller-book")
+
+    client = get_gguf_llm(
+        GgufSettings(base_url="http://localhost:8080/v1"), "distiller-book"
+    )
+    assert isinstance(client, OpenAICompatClient)
+    assert client.model == "distiller-book"
+    assert client.base_url == "http://localhost:8080/v1"
+
+
 def test_client_from_settings_maps_fields() -> None:
     """Settings fields flow into the client configuration."""
     client = client_from_settings(
@@ -93,3 +114,21 @@ def test_client_from_settings_maps_fields() -> None:
 
     assert client.model == "local-model"
     assert client.base_url == "http://localhost:1234/v1"
+
+
+def test_connection_errors_become_configuration_errors() -> None:
+    """An unreachable endpoint becomes a ConfigurationError with a hint (AC14)."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as probe:
+        probe.bind(("127.0.0.1", 0))
+        port = probe.getsockname()[1]
+    client = OpenAICompatClient(
+        model="local-model", base_url=f"http://127.0.0.1:{port}/v1"
+    )
+
+    with pytest.raises(ConfigurationError) as excinfo:
+        client.complete(system="s", user="u")
+
+    message = str(excinfo.value)
+    assert f"127.0.0.1:{port}" in message
+    assert "ollama serve" in message
+    assert "serve.sh" in message

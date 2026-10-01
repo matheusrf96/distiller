@@ -4,7 +4,9 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
-from openai import OpenAI
+from openai import APIConnectionError, OpenAI
+
+from ..exceptions import ConfigurationError
 
 if TYPE_CHECKING:
     from ..config import LLMSettings
@@ -71,18 +73,31 @@ class OpenAICompatClient:
 
         Returns:
             The generated text.
+
+        Raises:
+            ConfigurationError: When the endpoint cannot be reached, naming the
+                endpoint and the local-server hint.
         """
-        response = self._client.chat.completions.create(
-            model=self.model,
-            messages=[
-                {"role": "system", "content": system},
-                {"role": "user", "content": user},
-            ],
-            temperature=self.default_temperature
-            if temperature is None
-            else temperature,
-            max_tokens=self.default_max_tokens if max_tokens is None else max_tokens,
-        )
+        try:
+            response = self._client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system},
+                    {"role": "user", "content": user},
+                ],
+                temperature=self.default_temperature
+                if temperature is None
+                else temperature,
+                max_tokens=self.default_max_tokens
+                if max_tokens is None
+                else max_tokens,
+            )
+        except APIConnectionError as exc:
+            raise ConfigurationError(
+                f"Cannot reach the LLM endpoint at {self.base_url}. "
+                f"Start a local server (`ollama serve`) or run the emitted "
+                f"serve.sh, then retry."
+            ) from exc
         return response.choices[0].message.content or ""
 
 
