@@ -39,6 +39,10 @@ class TrainingError(DistillerError):
     """Raised when training data, configuration or an adapter is unusable."""
 
 
+class GGUFError(DistillerError):
+    """Raised when a GGUF file or its registration is unusable."""
+
+
 class MissingDependencyError(DistillerError):
     """Raised when a feature is used without its optional dependency installed."""
 

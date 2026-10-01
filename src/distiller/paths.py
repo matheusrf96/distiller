@@ -140,6 +140,31 @@ class BookPaths:
         return self.adapter_dir / "run.json"
 
     @property
+    def gguf_dir(self) -> Path:
+        """Registered GGUF directory (``training/gguf/``)."""
+        return self.training_dir / "gguf"
+
+    @property
+    def gguf_file(self) -> Path:
+        """Registered GGUF copy (``training/gguf/model.gguf``)."""
+        return self.gguf_dir / "model.gguf"
+
+    @property
+    def gguf_report_json(self) -> Path:
+        """GGUF registration report (``training/gguf/gguf.json``)."""
+        return self.gguf_dir / "gguf.json"
+
+    @property
+    def gguf_modelfile(self) -> Path:
+        """Ollama Modelfile (``training/gguf/Modelfile``)."""
+        return self.gguf_dir / "Modelfile"
+
+    @property
+    def gguf_serve_script(self) -> Path:
+        """llama-server/Ollama serving script (``training/gguf/serve.sh``)."""
+        return self.gguf_dir / "serve.sh"
+
+    @property
     def eval_training_json(self) -> Path:
         """Base-vs-adapter comparison report (``eval/training.json``)."""
         return self.eval_dir / "training.json"

@@ -240,6 +240,34 @@ class AdapterSettings(BaseModel):
         return self
 
 
+class GgufSettings(BaseModel):
+    """Served GGUF endpoint settings (Ollama or llama-server).
+
+    ``base_url=None`` means "no endpoint configured"; ``model=None`` means "use
+    the registered local name" (``distiller-<book-id>``), and the sentinel
+    ``"fake"`` selects the offline client, like :class:`AdapterSettings`.
+
+    Attributes:
+        base_url: Endpoint base URL of the served GGUF.
+        api_key: API key, when the endpoint requires one.
+        model: Served model name override; None uses the registered name.
+        timeout: Request timeout in seconds.
+    """
+
+    base_url: str | None = None
+    api_key: str | None = None
+    model: str | None = None
+    timeout: float = 120.0
+
+    @model_validator(mode="after")
+    def _validate_bounds(self) -> GgufSettings:
+        if self.timeout <= 0:
+            raise ValueError("gguf.timeout must be > 0")
+        if self.model is not None and not self.model.strip():
+            raise ValueError("gguf.model must not be blank")
+        return self
+
+
 class Settings(BaseSettings):
     """Root configuration: environment variables plus optional TOML file.
 
@@ -254,6 +282,7 @@ class Settings(BaseSettings):
         evaluation: Evaluation settings.
         training: Training dataset preparation settings.
         adapter: Served LoRA adapter endpoint settings.
+        gguf: Served GGUF endpoint settings.
     """
 
     model_config = SettingsConfigDict(
@@ -275,6 +304,7 @@ class Settings(BaseSettings):
     evaluation: EvaluationSettings = Field(default_factory=EvaluationSettings)
     training: TrainingSettings = Field(default_factory=TrainingSettings)
     adapter: AdapterSettings = Field(default_factory=AdapterSettings)
+    gguf: GgufSettings = Field(default_factory=GgufSettings)
 
     @classmethod
     def settings_customise_sources(

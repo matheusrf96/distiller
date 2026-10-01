@@ -7,6 +7,7 @@ model downloads. The offline pipeline uses the hashing embedder and the fake LLM
 from __future__ import annotations
 
 import json
+import struct
 from collections.abc import Callable
 from pathlib import Path
 
@@ -40,6 +41,12 @@ PdfFactory = Callable[..., Path]
 CorpusFactory = Callable[..., "tuple[BookDocument, list[Chunk]]"]
 RaftFactory = Callable[..., RaftExample]
 AdapterFactory = Callable[..., Path]
+GgufFactory = Callable[..., Path]
+
+# GGUF metadata value types used by the synthetic files (spec v2/v3).
+_GGUF_TYPE_UINT32 = 4
+_GGUF_TYPE_STRING = 8
+_GGUF_TYPE_ARRAY = 9
 
 
 @pytest.fixture()
@@ -259,6 +266,79 @@ def adapter_factory() -> AdapterFactory:
         }
         report.update(overrides)
         (path / "run.json").write_text(json.dumps(report), encoding="utf-8")
+        return path
+
+    return _make
+
+
+def _gguf_string(value: str) -> bytes:
+    """Encode a GGUF string: u64 length prefix plus UTF-8 bytes."""
+    encoded = value.encode("utf-8")
+    return struct.pack("<Q", len(encoded)) + encoded
+
+
+def _gguf_value(value: object) -> bytes:
+    """Encode one synthetic metadata value (u32, string or string array)."""
+    if isinstance(value, str):
+        return struct.pack("<I", _GGUF_TYPE_STRING) + _gguf_string(value)
+    if isinstance(value, list):
+        return (
+            struct.pack("<I", _GGUF_TYPE_ARRAY)
+            + struct.pack("<I", _GGUF_TYPE_STRING)
+            + struct.pack("<Q", len(value))
+            + b"".join(_gguf_string(item) for item in value)
+        )
+    return struct.pack("<I", _GGUF_TYPE_UINT32) + struct.pack("<I", int(value))
+
+
+@pytest.fixture()
+def gguf_factory() -> GgufFactory:
+    """Factory building small synthetic GGUF files (valid and broken).
+
+    The files carry a real header, metadata KV table and tensor-info table, so
+    the dependency-free reader can be exercised without binaries or downloads.
+    """
+
+    def _make(
+        path: Path,
+        *,
+        version: int = 3,
+        architecture: str = "qwen3",
+        model_name: str = "distiller-lantern-q4_k_m",
+        file_type: int | None = 15,
+        tensors: list[tuple[str, tuple[int, ...]]] | None = None,
+        extra_metadata: dict[str, object] | None = None,
+        magic: bytes = b"GGUF",
+        truncate: int | None = None,
+    ) -> Path:
+        tensor_shapes = tensors or [
+            ("token_embd.weight", (128, 64)),
+            ("output.weight", (32,)),
+        ]
+        metadata: dict[str, object] = {
+            "general.architecture": architecture,
+            "general.name": model_name,
+        }
+        if file_type is not None:
+            metadata["general.file_type"] = file_type
+        metadata.update(extra_metadata or {})
+
+        payload = magic + struct.pack("<I", version)
+        payload += struct.pack("<QQ", len(tensor_shapes), len(metadata))
+        for key, value in metadata.items():
+            payload += _gguf_string(key) + _gguf_value(value)
+        offset = 0
+        for name, dimensions in tensor_shapes:
+            payload += _gguf_string(name)
+            payload += struct.pack("<I", len(dimensions))
+            payload += struct.pack(f"<{len(dimensions)}Q", *dimensions)
+            payload += struct.pack("<I", 2)  # ggml tensor type (unused here)
+            payload += struct.pack("<Q", offset)
+            offset += 4096
+
+        if truncate is not None:
+            payload = payload[:truncate]
+        path.write_bytes(payload)
         return path
 
     return _make
