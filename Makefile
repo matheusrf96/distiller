@@ -1,4 +1,4 @@
-.PHONY: help install install-all format lint typecheck security unit-test test coverage fixtures check clean
+.PHONY: help install install-all format lint typecheck security spec-check unit-test test coverage fixtures check clean
 
 help:
 	@echo "Available commands:"
@@ -8,11 +8,12 @@ help:
 	@echo "  make lint           - Lint only (ruff)"
 	@echo "  make typecheck      - Strict type checking (mypy)"
 	@echo "  make security       - Security scan (ruff bandit rules)"
+	@echo "  make spec-check     - Validate the SDD spec tree (specs/)"
 	@echo "  make unit-test      - Run unit tests in parallel"
 	@echo "  make test           - Run all tests (unit + integration, fully offline)"
 	@echo "  make coverage       - Coverage report (fails under 80%)"
 	@echo "  make fixtures       - Download a Gutenberg book EPUB+PDF into fixtures/"
-	@echo "  make check          - Lint + typecheck + tests (what CI runs)"
+	@echo "  make check          - Lint + typecheck + tests + spec-check (what CI runs)"
 	@echo "  make clean          - Remove caches and coverage output"
 
 install:
@@ -53,6 +54,9 @@ typecheck:
 security:
 	uv run ruff check --select S src
 
+spec-check:
+	uv run python -m distiller.spec_check
+
 unit-test:
 	uv run pytest tests/unit -vv -n auto || exit 1
 
@@ -65,7 +69,7 @@ coverage:
 fixtures:
 	uv run python scripts/fetch_gutenberg.py --id 1661 --out fixtures/ --slug sherlock-holmes
 
-check: lint typecheck test
+check: lint typecheck test spec-check
 
 clean:
 	rm -rf .pytest_cache .mypy_cache .ruff_cache htmlcov .coverage
