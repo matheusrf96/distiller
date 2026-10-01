@@ -121,7 +121,7 @@ body:
           required: true
         - label: Spec tree is valid (`make spec-check`)
           required: true
-        - label: Coverage threshold is met (80%+)
+        - label: Coverage threshold is met (95%+)
           required: true
         - label: I have self-reviewed my own code
           required: true

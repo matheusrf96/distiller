@@ -104,8 +104,11 @@ One-line docstrings are acceptable for obvious functions.
   not module-level helpers imported between test files.
 - Fixtures have return type annotations and docstrings.
 - Mark tests needing network/heavy models with `@pytest.mark.integration`.
-- Coverage: `make coverage` fails under **80%** (`[tool.coverage.report]`).
-  Critical paths (ingest, chunking, retrieval, evaluation) target 90%+.
+- Coverage: `make coverage` fails under **95%** (`[tool.coverage.report]`);
+  the suite targets **100%** line and branch coverage on `src/distiller`.
+  Prefer real tests (fixtures, stubs, monkeypatched optional dependencies) over
+  exclusions; `# pragma: no cover` is reserved for genuinely unreachable code
+  (protocol stubs, `if __name__ == "__main__"` guards).
 
 ```bash
 make unit-test   # tests/unit, parallel

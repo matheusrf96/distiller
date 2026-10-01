@@ -123,7 +123,7 @@ commands), wired by `cli/`. Cross-package access goes through each package's
 | `make format` | Format, typecheck, lint and security-check |
 | `make unit-test` | Unit tests only, parallel |
 | `make test` | All tests (unit + integration), fully offline |
-| `make coverage` | Coverage report (fails under 80%) |
+| `make coverage` | Coverage report (fails under 95%) |
 | `make check` | Lint + typecheck + tests (CI gate) |
 
 ---

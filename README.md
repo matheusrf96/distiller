@@ -295,7 +295,7 @@ live in **[docs/CONTRIBUTING.md](docs/CONTRIBUTING.md)**. The essentials:
 make format        # format + typecheck + lint + security (run before committing)
 make unit-test     # unit tests only, parallel
 make test          # all tests (unit + integration), fully offline
-make coverage      # coverage report (fails under 80%)
+make coverage      # coverage report (fails under 95%)
 make spec-check    # validate the SDD spec tree
 make check         # lint + typecheck + tests + spec-check (the CI gate)
 ```
