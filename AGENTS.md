@@ -41,15 +41,29 @@ All markdown files MUST go in `docs/`. ONLY exceptions: `AGENTS.md` and
 
 ### ⚠️ RULE #2: Spec-Driven Development for Non-Trivial Features
 
-New features follow this order:
+Every non-trivial feature, refactor or behaviour change follows the SDD
+lifecycle documented in **[specs/README.md](specs/README.md)**:
 
 ```
-1. spec folder        → specs/<feature>/{requirements,design,tasks}.md
-2. TDD loop           → failing test → implement → green (per tasks.md)
-3. code-review skill  → checks spec presence, task completion, conventions
+draft ──(approve)──> active ──(implement)──> archived
 ```
 
-Bug fixes (single file, no new behavior) and trivial config changes need no spec.
+1. **Author** — the `spec-author` agent writes a draft into `specs/drafts/`
+   from `specs/TEMPLATE.md`; assign the next `SDD-NNNN`.
+2. **Review** — the `spec-reviewer` agent validates front-matter, EARS
+   requirements, testable ACs (each referencing its requirement), non-goals,
+   file-change plan and test plan; it must PASS every section.
+3. **Approve** — the maintainer approves explicitly; the file moves to
+   `specs/active/` with `status: approved`.
+   **NEVER implement before this gate.**
+4. **Implement** — `feature-implementer` works from the spec, test-first, and
+   prints an AC-coverage report; `status: implementing`.
+5. **Archive** — all ACs covered, `make check` green, `Outcomes` filled with
+   commit SHAs; the file moves to `specs/archived/` with `status: done`.
+
+Gate: `make spec-check` runs as part of `make check`. Commit subjects carry the
+spec id (e.g. `feat(synthesis): SDD-0003 add grounded QA generation`).
+Trivial fixes (single file, no new behaviour) and config/typo changes are exempt.
 
 ---
 
@@ -105,8 +119,8 @@ Cross-package access goes through each package's `__init__`.
 | Phase | Scope | State |
 |-------|-------|-------|
 | v1 | Ingest → chunk → hybrid index → cited answers → eval harness | ✅ done |
-| Phase 1 | Contextual chunk enrichment + reranking ablations (`specs/`) | ✅ done |
-| Phase 2 | Synthetic QA + RAFT dataset generation (`specs/synthetic-qa/`) | ✅ done |
+| Phase 1 | Contextual chunk enrichment + reranking ablations (`SDD-0001`, `SDD-0002`) | ✅ done |
+| Phase 2 | Synthetic QA + RAFT dataset generation (`SDD-0003`) | ✅ done |
 | Phase 3 | Qwen3-4B QLoRA on a free T4 + eval vs baseline | planned |
 | Phase 4 | GGUF export + CPU/GPU-hybrid serving (llama.cpp/Ollama) | planned |
 | Phase 5 | LightRAG/RAPTOR thematic layer (whole-book questions) | planned |

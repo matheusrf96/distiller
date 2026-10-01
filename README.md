@@ -210,8 +210,13 @@ make format        # format + typecheck + lint + security (run before committing
 make unit-test     # unit tests only, parallel
 make test          # all tests (unit + integration), fully offline
 make coverage      # coverage report (fails under 80%)
-make check         # lint + typecheck + tests (the CI gate)
+make spec-check    # validate the SDD spec tree
+make check         # lint + typecheck + tests + spec-check (the CI gate)
 ```
+
+Non-trivial features follow the spec-driven workflow in
+**[specs/README.md](specs/README.md)** (draft → review → approve → implement →
+archive); `make spec-check` enforces it.
 
 The test suite never touches the network: `tests/unit/` covers parsing, chunking,
 indexing, retrieval, generation and metrics in isolation, while
