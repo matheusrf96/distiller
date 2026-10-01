@@ -46,11 +46,41 @@ The `training` extra (Unsloth + TRL + bitsandbytes) is deliberately **not** part
 stays portable. It is only needed to run the training notebook, not to prepare data
 or evaluate adapters.
 
+### Try it offline first
+
+Verify the install end to end with the deterministic fake LLM and hash embedder —
+no API key, no model download, no GPU:
+
+```bash
+make fixtures    # one-time: public-domain Sherlock Holmes sample (EPUB + PDF)
+
+export DISTILLER_LLM__MODEL=fake
+uv run distiller ingest fixtures/sherlock-holmes.epub
+uv run distiller index the-adventures-of-sherlock-holmes --embedding-backend hash
+uv run distiller ask the-adventures-of-sherlock-holmes "Who is Watson?"
+```
+
 ## Quickstart
+
+Before the first real run, point the pipeline at a generation backend and make sure
+the embedding extra is installed (the commands below assume `make install-all`; with
+the core install, add `--embedding-backend hash` or `uv sync --extra embed`):
+
+```bash
+# Any OpenAI-compatible endpoint: cloud API, Ollama, llama.cpp, vLLM...
+export DISTILLER_LLM__BASE_URL=http://localhost:11434/v1
+export DISTILLER_LLM__MODEL=qwen3:8b
+export DISTILLER_LLM__API_KEY=...      # only when the endpoint requires one
+
+# ...or run without any backend at all (deterministic smoke answers)
+export DISTILLER_LLM__MODEL=fake
+```
+
+Then walk the pipeline:
 
 ```bash
 # 1. Parse a book (EPUB, PDF, Markdown or plain text)
-uv run distiller ingest fixtures/sherlock.epub
+uv run distiller ingest fixtures/sherlock-holmes.epub
 
 # 2. Chunk + embed + index it
 uv run distiller index the-adventures-of-sherlock-holmes
@@ -73,6 +103,7 @@ uv run distiller ablation the-adventures-of-sherlock-holmes --top-k 4,8,12
 uv run distiller synth the-adventures-of-sherlock-holmes --max-chunks 100
 
 # 6. Prepare the QLoRA training data + T4 notebook (Phase 3)
+#    (steps 6-8 need the manual T4 run; see the runbooks linked in Status)
 uv run distiller train the-adventures-of-sherlock-holmes
 
 # ...train manually on a free T4 with training/train_t4.ipynb, then register:
@@ -186,6 +217,36 @@ target_chars = 1800
 overlap_chars = 250
 max_chars = 3600
 ```
+
+## Troubleshooting the first run
+
+| Symptom | Fix |
+| --- | --- |
+| `MissingDependencyError: ... --extra embed` during `index` | `uv sync --extra embed` (or `make install-all`), or run with `--embedding-backend hash` |
+| `index` fails with "built with embedder ..." | the index remembers its embedder; re-run `distiller index <book>` |
+| `ask` fails with an API-key or connection error | set `DISTILLER_LLM__BASE_URL`/`__API_KEY`, or use `DISTILLER_LLM__MODEL=fake` |
+| `Golden set not found` on `eval` | `cp examples/golden.example.yaml artifacts/<book-id>/golden.yaml` |
+| PDF parses poorly or fails | install `--extra pdf-ai` (docling), or force a backend with `--pdf-backend pymupdf`; parsing warnings name each fallback |
+| `--gguf` errors | register the export first (`distiller gguf register ...`) and start the server; the error names the exact command |
+| First `index` is slow | the embedding model downloads once and is cached locally; later runs are offline |
+| Lost track of a book | `distiller books` lists everything; `distiller info <book-id>` shows the index identity |
+
+## Command reference
+
+| Command | What it does |
+| --- | --- |
+| `distiller ingest <file>` | Parse a PDF/EPUB/Markdown/text book into `artifacts/<book-id>/` |
+| `distiller index <book>` | Chunk + embed + index (`--contextual` for LLM-situated chunks) |
+| `distiller ask <book> "<question>"` | Cited answer (`--json`, `--chapter`, `--top-k`, `--rerank`; `--global` for whole-book) |
+| `distiller eval <book>` | Golden-set metrics (`--adapter`, `--gguf`, `--global`, `--ragas`) |
+| `distiller ablation <book>` | Compare retrieval configs (rerank on/off, top-k sweep) |
+| `distiller synth <book>` | Synthetic QA + RAFT dataset from the indexed chunks |
+| `distiller train <book>` | Prepare chat splits + QLoRA config + T4 notebook (`--register <dir>` registers an adapter) |
+| `distiller train-eval <book>` | Base vs adapter vs served GGUF on one golden set |
+| `distiller gguf register <book> <file.gguf>` | Validate + register a downloaded GGUF export |
+| `distiller gguf serve <book>` | Print the Modelfile and llama.cpp/Ollama commands (launches nothing) |
+| `distiller tree build <book>` | Build the thematic summary tree for `--global` questions |
+| `distiller books` / `info <book>` | List ingested books / inspect one book and its index |
 
 ## How it works
 
@@ -313,7 +374,8 @@ EPUB/PDF files and the pipeline runs with
 ### Real-book fixtures
 
 ```bash
-python scripts/fetch_gutenberg.py --id 1661 --out fixtures/   # Sherlock Holmes EPUB + generated PDF
+make fixtures   # same as:
+python scripts/fetch_gutenberg.py --id 1661 --out fixtures/ --slug sherlock-holmes
 ```
 
 ## Licensing notes
