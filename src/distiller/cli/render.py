@@ -19,6 +19,7 @@ if TYPE_CHECKING:
     from ..models import Answer, BookDocument
     from ..paths import BookPaths
     from ..synthesis import DatasetManifest
+    from ..thematic import TreeManifest
     from ..training import TrainingBundle, TrainingComparison, TrainingReport
 
 console = Console()
@@ -78,7 +79,19 @@ def render_answer(answer: Answer, book_title: str) -> None:
         Panel(answer.text, title=f"[bold]{book_title}[/bold]", border_style=border)
     )
 
-    if answer.citations:
+    if answer.summary_citations:
+        table = Table(title="Sources")
+        table.add_column("#", justify="right", style="cyan")
+        table.add_column("Node")
+        table.add_column("level", style="dim")
+        for summary_citation in answer.summary_citations:
+            table.add_row(
+                f"[{summary_citation.index}]",
+                summary_citation.title,
+                f"level {summary_citation.level}",
+            )
+        console.print(table)
+    elif answer.citations:
         table = Table(title="Sources")
         table.add_column("#", justify="right", style="cyan")
         table.add_column("Location")
@@ -188,6 +201,32 @@ def render_synthesis(manifest: DatasetManifest, dataset_dir: Path) -> None:
             ("dataset", str(dataset_dir)),
         ],
     )
+
+
+def render_tree_build(manifest: TreeManifest, thematic_dir: Path) -> None:
+    """Render the summary tree build table shown after `distiller tree build`."""
+    summary_table(
+        f"Thematic tree: {manifest.book_id}",
+        [
+            ("model", manifest.model),
+            ("window size", str(manifest.config.get("window_size", "-"))),
+            ("chapters", str(manifest.chapter_count)),
+            ("windows", str(manifest.window_count)),
+            ("nodes", str(manifest.node_count)),
+            ("summaries generated", str(manifest.generated_summaries)),
+            ("summaries reused", str(manifest.reused_summaries)),
+            ("failed nodes", str(len(manifest.failed_node_ids))),
+            ("source hash", manifest.source_hash),
+            ("tree hash", manifest.tree_hash),
+            ("tree", str(thematic_dir / "tree.json")),
+            ("manifest", str(thematic_dir / "manifest.json")),
+        ],
+    )
+    if manifest.failed_node_ids:
+        console.print(
+            f"[yellow]{len(manifest.failed_node_ids)} node(s) failed; "
+            f"re-run `distiller tree build` to retry them.[/yellow]"
+        )
 
 
 def render_training(bundle: TrainingBundle, paths: BookPaths) -> None:

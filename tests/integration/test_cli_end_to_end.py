@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 import json
 import socket
+import subprocess
 import sys
 from typing import TYPE_CHECKING
 
@@ -88,6 +89,7 @@ def test_full_offline_pipeline(
     report = json.loads(report_path.read_text(encoding="utf-8"))
     assert report["metrics"]["item_count"] == 2
     assert report["metrics"]["retrieval_hit_rate"] == 1.0
+    assert report["retrieval"] == {"mode": "local", "tree": None}
 
     # 5. listing and info
     assert BOOK_ID in invoke_cli(["books"]).output
@@ -1050,3 +1052,301 @@ def test_gguf_commands_report_errors_without_tracebacks(
     assert result.exit_code != 0
     assert "ollama serve" in flat_output(result)
     assert "Traceback" not in result.output
+
+
+def _prepare_thematic_inputs(
+    epub_factory: Callable[..., Path],
+    tmp_path: Path,
+    *,
+    window_size: int | None = None,
+) -> Path:
+    """Ingest, index and build the summary tree; return a thematic golden set."""
+    epub_path = epub_factory(tmp_path / "lantern.epub")
+    invoke_cli(["ingest", str(epub_path)])
+    invoke_cli(["index", BOOK_ID])
+    arguments = ["tree", "build", BOOK_ID]
+    if window_size is not None:
+        arguments += ["--window-size", str(window_size)]
+    invoke_cli(arguments)
+
+    golden_path = tmp_path / "thematic-golden.yaml"
+    save_golden(
+        golden_path,
+        [
+            GoldenItem(
+                question="What happened to the lantern during the storm?",
+                expected_answer_contains=["lantern"],
+            ),
+            GoldenItem(question="Who won the village sailing race?", answerable=False),
+        ],
+    )
+    return golden_path
+
+
+def test_tree_build_command_end_to_end(
+    offline_env: Path,
+    epub_factory: Callable[..., Path],
+    tmp_path: Path,
+) -> None:
+    """`tree build` writes the tree and manifest; windows and JSON match (AC1/AC13)."""
+    epub_path = epub_factory(tmp_path / "lantern.epub")
+    invoke_cli(["ingest", str(epub_path)])
+    invoke_cli(["index", BOOK_ID])
+
+    result = invoke_cli(["tree", "build", BOOK_ID])
+    assert "Thematic tree" in flat_output(result)
+
+    thematic = offline_env / BOOK_ID / "thematic"
+    tree = json.loads((thematic / "tree.json").read_text(encoding="utf-8"))
+    manifest = json.loads((thematic / "manifest.json").read_text(encoding="utf-8"))
+    assert [node["id"] for node in tree["nodes"] if node["level"] == 1] == [
+        f"{BOOK_ID}:chapter:{index}" for index in range(1, 4)
+    ]
+    assert not [node for node in tree["nodes"] if node["level"] == 2]
+    assert manifest["chapter_count"] == 3
+    assert manifest["window_count"] == 0
+    assert manifest["node_count"] == len(tree["nodes"]) == 4
+    assert manifest["generated_summaries"] == 4
+    assert manifest["reused_summaries"] == 0
+    assert manifest["failed_node_ids"] == []
+
+    invoke_cli(["tree", "build", BOOK_ID, "--window-size", "2", "--regenerate"])
+    tree = json.loads((thematic / "tree.json").read_text(encoding="utf-8"))
+    windows = [node for node in tree["nodes"] if node["level"] == 2]
+    assert [node["title"] for node in windows] == ["Chapters 1-2", "Chapters 3-3"]
+    assert [node["id"] for node in windows] == [
+        f"{BOOK_ID}:window:1-2",
+        f"{BOOK_ID}:window:3-3",
+    ]
+
+    written = json.loads((thematic / "manifest.json").read_text(encoding="utf-8"))
+    payload = json.loads(
+        invoke_cli(
+            ["tree", "build", BOOK_ID, "--window-size", "2", "--regenerate", "--json"]
+        ).output
+    )
+    assert payload == written
+    assert (thematic / "summaries.jsonl").exists()
+
+
+def test_tree_build_fails_when_every_summary_fails(
+    offline_env: Path,
+    epub_factory: Callable[..., Path],
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A model failing every chapter exits naming it, writing nothing (AC5)."""
+    epub_path = epub_factory(tmp_path / "lantern.epub")
+    invoke_cli(["ingest", str(epub_path)])
+    invoke_cli(["index", BOOK_ID])
+
+    class FailingLLM:
+        @property
+        def name(self) -> str:
+            return "flaky-model"
+
+        def complete(self, **kwargs: object) -> str:
+            raise RuntimeError("endpoint down")
+
+    monkeypatch.setattr("distiller.cli.main.get_llm", lambda settings: FailingLLM())
+
+    result = runner.invoke(app, ["tree", "build", BOOK_ID])
+
+    assert result.exit_code != 0
+    assert "flaky-model" in flat_output(result)
+    assert "Traceback" not in result.output
+    assert not (offline_env / BOOK_ID / "thematic").exists()
+
+
+def test_tree_build_requires_an_indexed_book(
+    offline_env: Path,
+    epub_factory: Callable[..., Path],
+    tmp_path: Path,
+) -> None:
+    """A book without chunks exits naming `distiller index`, writing nothing (AC6)."""
+    epub_path = epub_factory(tmp_path / "lantern.epub")
+    invoke_cli(["ingest", str(epub_path)])
+
+    result = runner.invoke(app, ["tree", "build", BOOK_ID])
+
+    assert result.exit_code != 0
+    assert "distiller index" in flat_output(result)
+    assert "Traceback" not in result.output
+    assert not (offline_env / BOOK_ID / "thematic").exists()
+
+
+def test_ask_global_command_end_to_end(
+    offline_env: Path,
+    epub_factory: Callable[..., Path],
+    tmp_path: Path,
+) -> None:
+    """`ask --global` cites nodes, prints Sources and rejects local flags (AC7)."""
+    _prepare_thematic_inputs(epub_factory, tmp_path)
+
+    result = invoke_cli(["ask", BOOK_ID, "What are the main themes?", "--global"])
+    output = flat_output(result)
+    assert "Sources" in output
+
+    payload = json.loads(
+        invoke_cli(
+            ["ask", BOOK_ID, "What are the main themes?", "--global", "--json"]
+        ).output
+    )
+    assert payload["mode"] == "global"
+    assert payload["citations"] == []
+    assert payload["summary_citations"]
+    citation = payload["summary_citations"][0]
+    assert citation["node_id"].startswith(BOOK_ID)
+    assert citation["title"] in output
+
+    local = json.loads(
+        invoke_cli(["ask", BOOK_ID, "What happened to the lantern?", "--json"]).output
+    )
+    assert local["mode"] == "local"
+    assert local["citations"]
+
+    for flag in (["--top-k", "3"], ["--chapter", "Chapter One"], ["--rerank"]):
+        result = runner.invoke(app, ["ask", BOOK_ID, "What?", "--global", *flag])
+        assert result.exit_code != 0
+        assert flag[0] in flat_output(result)
+        assert "--global" in flat_output(result)
+        assert "Traceback" not in result.output
+
+    # without a loadable index, global selection falls back to chapter summaries
+    (offline_env / BOOK_ID / "index" / "metadata.json").unlink()
+    fallback = json.loads(
+        invoke_cli(
+            ["ask", BOOK_ID, "What are the main themes?", "--global", "--json"]
+        ).output
+    )
+    assert fallback["mode"] == "global"
+    assert fallback["summary_citations"]
+
+
+def test_global_commands_require_a_tree(
+    offline_env: Path,
+    epub_factory: Callable[..., Path],
+    tmp_path: Path,
+) -> None:
+    """`ask --global` and `eval --global` name `distiller tree build` (AC9)."""
+    epub_path = epub_factory(tmp_path / "lantern.epub")
+    invoke_cli(["ingest", str(epub_path)])
+    golden_path = _write_training_golden(tmp_path)
+
+    for arguments in (
+        ["ask", BOOK_ID, "What are the main themes?", "--global"],
+        ["eval", BOOK_ID, "--golden", str(golden_path), "--global"],
+    ):
+        result = runner.invoke(app, arguments)
+        assert result.exit_code != 0
+        assert "distiller tree build" in flat_output(result)
+        assert "Traceback" not in result.output
+
+
+def test_global_commands_reject_a_corrupt_tree(
+    offline_env: Path,
+    epub_factory: Callable[..., Path],
+    tmp_path: Path,
+) -> None:
+    """A corrupt tree.json fails actionably for both global commands (AC9)."""
+    epub_path = epub_factory(tmp_path / "lantern.epub")
+    invoke_cli(["ingest", str(epub_path)])
+    thematic = offline_env / BOOK_ID / "thematic"
+    thematic.mkdir(parents=True)
+    (thematic / "tree.json").write_text(
+        '{"book_id": "the-lantern-keeper", "nodes": [', encoding="utf-8"
+    )
+    golden_path = _write_training_golden(tmp_path)
+
+    for arguments in (
+        ["ask", BOOK_ID, "What are the main themes?", "--global"],
+        ["eval", BOOK_ID, "--golden", str(golden_path), "--global"],
+    ):
+        result = runner.invoke(app, arguments)
+        assert result.exit_code != 0
+        assert "distiller tree build" in flat_output(result)
+        assert "Traceback" not in result.output
+
+
+def test_eval_global_records_the_tree_identity(
+    offline_env: Path,
+    epub_factory: Callable[..., Path],
+    tmp_path: Path,
+) -> None:
+    """`eval --global` records mode, tree hash, model and counts (AC10)."""
+    golden_path = _prepare_thematic_inputs(epub_factory, tmp_path)
+
+    invoke_cli(["eval", BOOK_ID, "--golden", str(golden_path), "--global"])
+
+    report = json.loads(
+        (offline_env / BOOK_ID / "eval" / "report.json").read_text(encoding="utf-8")
+    )
+    manifest = json.loads(
+        (offline_env / BOOK_ID / "thematic" / "manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert report["retrieval"]["mode"] == "global"
+    tree = report["retrieval"]["tree"]
+    assert tree["hash"] == manifest["tree_hash"]
+    assert tree["model"] == manifest["model"] == "fake"
+    assert tree["chapter_count"] == manifest["chapter_count"] == 3
+    assert tree["window_count"] == manifest["window_count"]
+    assert tree["node_count"] == manifest["node_count"]
+    assert report["generator"]["kind"] == "base"
+    assert report["metrics"]["citation_coverage"] == 1.0
+    assert report["metrics"]["contains_rate"] is not None
+
+
+def test_eval_global_rejects_ragas(
+    offline_env: Path,
+    epub_factory: Callable[..., Path],
+    tmp_path: Path,
+) -> None:
+    """`--ragas` combined with `--global` is rejected with a friendly error (AC10)."""
+    epub_path = epub_factory(tmp_path / "lantern.epub")
+    invoke_cli(["ingest", str(epub_path)])
+    golden_path = _write_training_golden(tmp_path)
+
+    result = runner.invoke(
+        app, ["eval", BOOK_ID, "--golden", str(golden_path), "--global", "--ragas"]
+    )
+
+    assert result.exit_code != 0
+    assert "--ragas" in flat_output(result)
+    assert "--global" in flat_output(result)
+    assert "Traceback" not in result.output
+
+
+def test_thematic_pipeline_end_to_end(
+    offline_env: Path,
+    epub_factory: Callable[..., Path],
+    tmp_path: Path,
+) -> None:
+    """The offline chain ingest -> index -> tree build -> ask/eval --global (AC12)."""
+    golden_path = _prepare_thematic_inputs(epub_factory, tmp_path)
+
+    result = invoke_cli(["ask", BOOK_ID, "What are the main themes?", "--global"])
+    assert "Sources" in flat_output(result)
+
+    invoke_cli(["eval", BOOK_ID, "--golden", str(golden_path), "--global"])
+    report = json.loads(
+        (offline_env / BOOK_ID / "eval" / "report.json").read_text(encoding="utf-8")
+    )
+    assert report["retrieval"]["mode"] == "global"
+    assert report["metrics"]["item_count"] == 2
+
+    # the thematic package pulls in no optional dependency
+    probe = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            "import sys; import distiller.thematic; print(any(m in sys.modules for m "
+            "in ('sentence_transformers', 'torch', 'qdrant_client', 'docling', "
+            "'ragas')))",
+        ],
+        capture_output=True,
+        text=True,
+        check=True,
+    )
+    assert probe.stdout.strip() == "False"

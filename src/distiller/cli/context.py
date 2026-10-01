@@ -14,7 +14,7 @@ from ..evaluation import (
     AblationVariant,
     load_golden,
 )
-from ..exceptions import DistillerError
+from ..exceptions import DistillerError, ThematicError
 from ..gguf import load_gguf_report, register_gguf
 from ..indexing import IndexBundle, build_index, load_index
 from ..ingest import ingest_book
@@ -23,6 +23,15 @@ from ..models import BookDocument, Chunk
 from ..optional_deps import is_available
 from ..paths import BookPaths
 from ..rag import Generator, QAPipeline, Retriever, get_reranker
+from ..thematic import (
+    GlobalPipeline,
+    SummaryTree,
+    TreeManifest,
+    TreeRun,
+    build_tree,
+    load_manifest,
+    load_tree,
+)
 from ..training import (
     GeneratorVariant,
     QLoRAConfig,
@@ -40,7 +49,7 @@ from ..utils import read_json, read_jsonl
 if TYPE_CHECKING:
     from pathlib import Path
 
-    from ..config import Settings
+    from ..config import Settings, ThematicSettings
     from ..evaluation import GoldenItem
     from ..gguf import GgufReport
     from ..llm import LLMClient
@@ -607,6 +616,122 @@ def load_book_and_chunks(
             f"Artifacts for '{book_id}' are incomplete or corrupt: {exc}"
         ) from exc
     return book, chunks
+
+
+def build_tree_or_fail(
+    book: BookDocument,
+    chunks: list[Chunk],
+    llm: LLMClient,
+    settings: ThematicSettings,
+    *,
+    cache_path: Path | None,
+    regenerate: bool,
+) -> TreeRun:
+    """Build the thematic summary tree, turning domain errors into CLI errors.
+
+    Args:
+        book: Parsed book.
+        chunks: Indexed chunks of the book.
+        llm: Chat client used for summarization.
+        settings: Thematic settings (window size and character budgets).
+        cache_path: Optional ``summaries.jsonl`` cache (read and appended).
+        regenerate: Ignore cached summaries and call the LLM again.
+
+    Returns:
+        The built tree plus its manifest.
+
+    Raises:
+        typer.BadParameter: When the book cannot be summarized (no chapters,
+            no chunks, or every chapter summary failed).
+    """
+    try:
+        return build_tree(
+            book,
+            chunks,
+            llm,
+            settings,
+            cache_path=cache_path,
+            regenerate=regenerate,
+        )
+    except ThematicError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+
+def load_thematic_tree_or_fail(settings: Settings, book_id: str) -> SummaryTree:
+    """Load ``thematic/tree.json``, or a friendly CLI error.
+
+    Args:
+        settings: Pipeline settings.
+        book_id: Book whose tree should be loaded.
+
+    Returns:
+        The validated summary tree.
+
+    Raises:
+        typer.BadParameter: When the tree is missing or corrupt; the message
+            names ``distiller tree build``.
+    """
+    paths = BookPaths.for_book(settings.artifacts_dir, book_id)
+    try:
+        return load_tree(paths.thematic_tree_json)
+    except ThematicError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+
+def load_thematic_manifest_or_fail(settings: Settings, book_id: str) -> TreeManifest:
+    """Load ``thematic/manifest.json``, or a friendly CLI error.
+
+    Args:
+        settings: Pipeline settings.
+        book_id: Book whose manifest should be loaded.
+
+    Returns:
+        The validated tree manifest.
+
+    Raises:
+        typer.BadParameter: When the manifest is missing or corrupt; the
+            message names ``distiller tree build``.
+    """
+    paths = BookPaths.for_book(settings.artifacts_dir, book_id)
+    try:
+        return load_manifest(paths.thematic_manifest_json)
+    except ThematicError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+
+def build_global_pipeline(
+    settings: Settings,
+    tree: SummaryTree,
+    *,
+    llm: LLMClient | None = None,
+) -> GlobalPipeline:
+    """Assemble the global (map-reduce) pipeline for one book.
+
+    Selection uses the index embedder when the index is loadable; a book
+    without one still answers globally by mapping every chapter summary in
+    reading order.
+
+    Args:
+        settings: Pipeline settings.
+        tree: Summary tree built by ``distiller tree build``.
+        llm: Generator client override (the served adapter/GGUF); defaults to
+            the configured base LLM.
+
+    Returns:
+        Pipeline that answers whole-book questions from tree summaries.
+    """
+    embedder = None
+    try:
+        embedder = load_index(tree.book_id, settings).embedder
+    except DistillerError as exc:
+        logger.debug("Global selection without an index embedder: %s", exc)
+    return GlobalPipeline(
+        tree,
+        llm or get_llm(settings),
+        settings.thematic,
+        embedder=embedder,
+        max_tokens=settings.llm.max_tokens,
+    )
 
 
 def build_ablation_runs(

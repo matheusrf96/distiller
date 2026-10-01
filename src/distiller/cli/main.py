@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path  # noqa: TC003 - typer resolves command annotations at runtime
-from typing import TYPE_CHECKING, Annotated, Any, cast
+from typing import TYPE_CHECKING, Annotated, Any, Protocol, cast
 
 import typer
 from rich.logging import RichHandler
@@ -24,6 +24,7 @@ from ..ingest.common import render_book_markdown
 from ..llm import get_llm
 from ..paths import BookPaths
 from ..synthesis import load_cached_pairs, synthesize
+from ..thematic import tree_identity
 from ..training import run_comparison
 from ..utils import read_json, write_json, write_jsonl
 from .context import (
@@ -31,9 +32,11 @@ from .context import (
     adapter_llm_or_fail,
     apply_overrides,
     build_ablation_runs,
+    build_global_pipeline,
     build_index_or_fail,
     build_pipeline,
     build_training_runs,
+    build_tree_or_fail,
     check_training_runtime_or_fail,
     gguf_identity,
     gguf_llm_or_fail,
@@ -43,9 +46,10 @@ from .context import (
     load_golden_set,
     load_registered_adapter_or_fail,
     load_registered_gguf_or_fail,
+    load_thematic_manifest_or_fail,
+    load_thematic_tree_or_fail,
     load_training_examples,
     parse_top_k_values,
-    pipeline_model_name,
     prepare_training_or_fail,
     register_adapter_or_fail,
     register_gguf_or_fail,
@@ -67,12 +71,23 @@ from .render import (
     render_runtime,
     render_synthesis,
     render_training,
+    render_tree_build,
 )
 
 if TYPE_CHECKING:
     from ..evaluation import GoldenItem
     from ..llm import LLMClient
+    from ..models import Answer
     from ..rag import QAPipeline
+
+
+class AnsweringPipeline(Protocol):
+    """Minimal interface shared by the local and global pipelines."""
+
+    def ask(self, question: str) -> Answer:
+        """Answer one question about the book."""
+        ...
+
 
 app = typer.Typer(
     no_args_is_help=True,
@@ -210,6 +225,13 @@ def ask(
         bool,
         typer.Option("--gguf", help="Answer with the registered GGUF endpoint."),
     ] = False,
+    global_mode: Annotated[
+        bool,
+        typer.Option(
+            "--global",
+            help="Answer from the thematic summary tree (whole-book questions).",
+        ),
+    ] = False,
     as_json: Annotated[
         bool,
         typer.Option("--json", help="Print the full Answer object as JSON."),
@@ -219,29 +241,34 @@ def ask(
     settings = settings_from_context(ctx)
     if adapter and gguf:
         raise typer.BadParameter("Choose one generator: --adapter or --gguf, not both.")
-    bundle = load_book_index(settings, book_id)
+    if global_mode:
+        reject_local_only_flags(top_k=top_k, chapter=chapter, rerank=rerank)
 
-    llm = None
-    if adapter:
-        load_registered_adapter_or_fail(settings, book_id)
-        llm = adapter_llm_or_fail(settings)
-    elif gguf:
-        gguf_report, _ = load_registered_gguf_or_fail(settings, book_id)
-        llm = gguf_llm_or_fail(settings, gguf_report)
-    pipeline = build_pipeline(settings, bundle, rerank=rerank, llm=llm)
-
-    try:
+    question_text = " ".join(question).strip()
+    if global_mode:
+        llm = generator_llm_or_fail(settings, book_id, adapter=adapter, gguf=gguf)
+        tree = load_thematic_tree_or_fail(settings, book_id)
+        pipeline = build_global_pipeline(settings, tree, llm=llm)
+        book_title = pipeline.book_title
         with console.status("Thinking..."):
-            answer = pipeline.ask(
-                " ".join(question).strip(), chapter=chapter, top_k=top_k
-            )
-    except DistillerError as exc:
-        raise typer.BadParameter(str(exc)) from exc
+            try:
+                answer = pipeline.ask(question_text)
+            except DistillerError as exc:
+                raise typer.BadParameter(str(exc)) from exc
+    else:
+        local_pipeline, book_title = build_local_pipeline(
+            settings, book_id, rerank=rerank, adapter=adapter, gguf=gguf
+        )
+        with console.status("Thinking..."):
+            try:
+                answer = local_pipeline.ask(question_text, chapter=chapter, top_k=top_k)
+            except DistillerError as exc:
+                raise typer.BadParameter(str(exc)) from exc
 
     if as_json:
         typer.echo(answer.model_dump_json(indent=2))
         return
-    render_answer(answer, bundle.book.title)
+    render_answer(answer, book_title)
 
 
 @app.command("eval")
@@ -268,6 +295,13 @@ def evaluate(
         bool,
         typer.Option("--gguf", help="Evaluate with the registered GGUF endpoint."),
     ] = False,
+    global_mode: Annotated[
+        bool,
+        typer.Option(
+            "--global",
+            help="Evaluate the golden items through the thematic summary tree.",
+        ),
+    ] = False,
     with_ragas: Annotated[
         bool,
         typer.Option(
@@ -279,6 +313,10 @@ def evaluate(
     settings = settings_from_context(ctx)
     if adapter and gguf:
         raise typer.BadParameter("Choose one generator: --adapter or --gguf, not both.")
+    if global_mode and with_ragas:
+        raise typer.BadParameter(
+            "--ragas is local-only and cannot be combined with --global."
+        )
     paths = BookPaths.for_book(settings.artifacts_dir, book_id)
     golden_path = golden or paths.golden_yaml
     if not golden_path.exists():
@@ -290,22 +328,27 @@ def evaluate(
     if limit:
         golden_items = golden_items[:limit]
 
-    bundle = load_book_index(settings, book_id)
-
     adapter_provenance: dict[str, Any] | None = None
     gguf_provenance: dict[str, Any] | None = None
-    if adapter:
-        adapter_report, adapter_dir = load_registered_adapter_or_fail(settings, book_id)
-        adapter_provenance = adapter_identity(adapter_report, adapter_dir)
-        pipeline = build_pipeline(settings, bundle, llm=adapter_llm_or_fail(settings))
-    elif gguf:
-        gguf_report, gguf_dir = load_registered_gguf_or_fail(settings, book_id)
-        gguf_provenance = gguf_identity(gguf_report, gguf_dir)
-        pipeline = build_pipeline(
-            settings, bundle, llm=gguf_llm_or_fail(settings, gguf_report)
+    pipeline: AnsweringPipeline
+    if global_mode:
+        llm, adapter_provenance, gguf_provenance = generator_override_or_fail(
+            settings, book_id, adapter=adapter, gguf=gguf
         )
+        tree = load_thematic_tree_or_fail(settings, book_id)
+        manifest = load_thematic_manifest_or_fail(settings, book_id)
+        pipeline = build_global_pipeline(settings, tree, llm=llm)
+        retrieval: dict[str, Any] = {
+            "mode": "global",
+            "tree": tree_identity(manifest),
+        }
     else:
-        pipeline = build_pipeline(settings, bundle)
+        bundle = load_book_index(settings, book_id)
+        llm, adapter_provenance, gguf_provenance = generator_override_or_fail(
+            settings, book_id, adapter=adapter, gguf=gguf
+        )
+        pipeline = build_pipeline(settings, bundle, llm=llm)
+        retrieval = {"mode": "local", "tree": None}
 
     try:
         results, samples = run_golden_set(pipeline, golden_items)
@@ -319,7 +362,7 @@ def evaluate(
     kind = "adapter" if adapter else "gguf" if gguf else "base"
     generator: dict[str, Any] = {
         "kind": kind,
-        "model": pipeline_model_name(pipeline),
+        "model": answering_model_name(pipeline),
         "adapter": adapter_provenance,
         "gguf": gguf_provenance,
     }
@@ -334,6 +377,7 @@ def evaluate(
             "contextual": index_metadata.get("contextual"),
             "enriched_chunks": index_metadata.get("enriched_chunks"),
         },
+        "retrieval": retrieval,
         "metrics": summarize(results),
         "items": [result.model_dump() for result in results],
     }
@@ -661,6 +705,60 @@ def train_eval(
     console.print(f"Report written to [cyan]{paths.eval_training_json}[/cyan]")
 
 
+tree_app = typer.Typer(
+    no_args_is_help=True,
+    help="Build the thematic summary tree for whole-book questions (Phase 5).",
+)
+app.add_typer(tree_app, name="tree")
+
+
+@tree_app.command("build")
+def tree_build(
+    ctx: typer.Context,
+    book_id: Annotated[str, typer.Argument(help="Book id.")],
+    window_size: Annotated[
+        int | None,
+        typer.Option("--window-size", help="Consecutive chapters per level-2 window."),
+    ] = None,
+    regenerate: Annotated[
+        bool,
+        typer.Option(
+            "--regenerate", help="Ignore cached summaries and call the LLM again."
+        ),
+    ] = False,
+    as_json: Annotated[
+        bool, typer.Option("--json", help="Print the manifest as JSON.")
+    ] = False,
+) -> None:
+    """Summarize chapters, windows and the whole book into thematic/tree.json."""
+    settings = settings_from_context(ctx)
+    if window_size is not None:
+        settings.thematic = apply_overrides(settings.thematic, window_size=window_size)
+
+    book, chunks = load_book_and_chunks(settings, book_id)
+    paths = BookPaths.for_book(settings.artifacts_dir, book_id)
+
+    with console.status("Building the summary tree..."):
+        run = build_tree_or_fail(
+            book,
+            chunks,
+            get_llm(settings),
+            settings.thematic,
+            cache_path=paths.thematic_summaries_jsonl,
+            regenerate=regenerate,
+        )
+
+    paths.thematic_dir.mkdir(parents=True, exist_ok=True)
+    write_json(paths.thematic_tree_json, run.tree.model_dump())
+    write_json(paths.thematic_manifest_json, run.manifest.model_dump())
+
+    if as_json:
+        typer.echo(run.manifest.model_dump_json(indent=2))
+        return
+    render_tree_build(run.manifest, paths.thematic_dir)
+    console.print(f"Thematic tree written to [cyan]{paths.thematic_dir}[/cyan]")
+
+
 gguf_app = typer.Typer(
     no_args_is_help=True,
     help="Validate, register and serve a GGUF export (Phase 4).",
@@ -734,14 +832,142 @@ def settings_from_context(ctx: typer.Context) -> Settings:
     return cast("Settings", ctx.obj)
 
 
+def reject_local_only_flags(
+    *,
+    top_k: int | None,
+    chapter: str | None,
+    rerank: bool,
+) -> None:
+    """Reject local retrieval flags when ``--global`` selects the thematic mode.
+
+    Args:
+        top_k: ``--top-k`` value, when given.
+        chapter: ``--chapter`` value, when given.
+        rerank: Whether ``--rerank`` was passed.
+
+    Raises:
+        typer.BadParameter: For any flag that only applies to local retrieval.
+    """
+    if top_k is not None:
+        raise typer.BadParameter(
+            "--top-k is local-only and cannot be combined with --global."
+        )
+    if chapter is not None:
+        raise typer.BadParameter(
+            "--chapter is local-only and cannot be combined with --global."
+        )
+    if rerank:
+        raise typer.BadParameter(
+            "--rerank is local-only and cannot be combined with --global."
+        )
+
+
+def build_local_pipeline(
+    settings: Settings,
+    book_id: str,
+    *,
+    rerank: bool,
+    adapter: bool,
+    gguf: bool,
+) -> tuple[QAPipeline, str]:
+    """Assemble the local retrieval pipeline and its book title.
+
+    Args:
+        settings: Pipeline settings.
+        book_id: Book to load the index for.
+        rerank: Force-enable cross-encoder reranking for this run.
+        adapter: Answer with the registered adapter endpoint.
+        gguf: Answer with the registered GGUF endpoint.
+
+    Returns:
+        The local pipeline and the book title for rendering.
+    """
+    bundle = load_book_index(settings, book_id)
+    llm = generator_llm_or_fail(settings, book_id, adapter=adapter, gguf=gguf)
+    pipeline = build_pipeline(settings, bundle, rerank=rerank, llm=llm)
+    return pipeline, bundle.book.title
+
+
+def generator_override_or_fail(
+    settings: Settings,
+    book_id: str,
+    *,
+    adapter: bool,
+    gguf: bool,
+) -> tuple[LLMClient | None, dict[str, Any] | None, dict[str, Any] | None]:
+    """Resolve the optional adapter/GGUF generator and its provenance.
+
+    Args:
+        settings: Pipeline settings.
+        book_id: Book whose registration must exist for ``--adapter``/``--gguf``.
+        adapter: Answer with the registered adapter endpoint.
+        gguf: Answer with the registered GGUF endpoint.
+
+    Returns:
+        ``(llm, adapter_provenance, gguf_provenance)``; the client is None when
+        no override was requested.
+    """
+    if adapter:
+        adapter_report, adapter_dir = load_registered_adapter_or_fail(settings, book_id)
+        return (
+            adapter_llm_or_fail(settings),
+            adapter_identity(adapter_report, adapter_dir),
+            None,
+        )
+    if gguf:
+        gguf_report, gguf_dir = load_registered_gguf_or_fail(settings, book_id)
+        return (
+            gguf_llm_or_fail(settings, gguf_report),
+            None,
+            gguf_identity(gguf_report, gguf_dir),
+        )
+    return None, None, None
+
+
+def generator_llm_or_fail(
+    settings: Settings,
+    book_id: str,
+    *,
+    adapter: bool,
+    gguf: bool,
+) -> LLMClient | None:
+    """Resolve the optional adapter/GGUF generator override, or a friendly error.
+
+    Args:
+        settings: Pipeline settings.
+        book_id: Book whose registration must exist for ``--adapter``/``--gguf``.
+        adapter: Answer with the registered adapter endpoint.
+        gguf: Answer with the registered GGUF endpoint.
+
+    Returns:
+        The override client, or None to use the configured base LLM.
+    """
+    llm, _, _ = generator_override_or_fail(
+        settings, book_id, adapter=adapter, gguf=gguf
+    )
+    return llm
+
+
+def answering_model_name(pipeline: AnsweringPipeline) -> str:
+    """Return the answering model identifier for the eval report.
+
+    Works for both the local pipeline (``generator.llm``) and the global
+    pipeline (``llm``).
+    """
+    llm = getattr(pipeline, "llm", None)
+    if llm is None:
+        llm = getattr(getattr(pipeline, "generator", None), "llm", None)
+    return str(getattr(llm, "name", "unknown"))
+
+
 def run_golden_set(
-    pipeline: QAPipeline,
+    pipeline: AnsweringPipeline,
     golden_items: list[GoldenItem],
 ) -> tuple[list[ItemResult], list[dict[str, Any]]]:
     """Ask every golden question and collect results plus RAGAS samples.
 
     Args:
-        pipeline: Assembled QA pipeline for the book.
+        pipeline: Assembled local or global pipeline for the book.
         golden_items: Validated golden questions.
 
     Returns:
