@@ -23,29 +23,43 @@ from ..ingest.common import render_book_markdown
 from ..llm import get_llm
 from ..paths import BookPaths
 from ..synthesis import load_cached_pairs, synthesize
+from ..training import run_comparison
 from ..utils import read_json, write_json, write_jsonl
 from .context import (
+    adapter_identity,
+    adapter_llm_or_fail,
     apply_overrides,
     build_ablation_runs,
     build_index_or_fail,
     build_pipeline,
+    build_training_runs,
+    check_training_runtime_or_fail,
     ingest_or_fail,
     load_book_and_chunks,
     load_book_index,
     load_golden_set,
+    load_registered_adapter_or_fail,
+    load_training_examples,
     parse_top_k_values,
+    pipeline_model_name,
+    prepare_training_or_fail,
+    register_adapter_or_fail,
 )
 from .render import (
     console,
     render_ablation,
     render_answer,
     render_books,
+    render_comparison,
     render_eval,
     render_index,
     render_info,
     render_ingest,
     render_ragas,
+    render_registration,
+    render_runtime,
     render_synthesis,
+    render_training,
 )
 
 if TYPE_CHECKING:
@@ -180,6 +194,10 @@ def ask(
         bool,
         typer.Option("--rerank/--no-rerank", help="Enable cross-encoder reranking."),
     ] = False,
+    adapter: Annotated[
+        bool,
+        typer.Option("--adapter", help="Answer with the registered adapter endpoint."),
+    ] = False,
     as_json: Annotated[
         bool,
         typer.Option("--json", help="Print the full Answer object as JSON."),
@@ -188,7 +206,12 @@ def ask(
     """Ask a question about an indexed book; answers carry citations."""
     settings = settings_from_context(ctx)
     bundle = load_book_index(settings, book_id)
-    pipeline = build_pipeline(settings, bundle, rerank=rerank)
+
+    llm = None
+    if adapter:
+        load_registered_adapter_or_fail(settings, book_id)
+        llm = adapter_llm_or_fail(settings)
+    pipeline = build_pipeline(settings, bundle, rerank=rerank, llm=llm)
 
     with console.status("Thinking..."):
         answer = pipeline.ask(" ".join(question).strip(), chapter=chapter, top_k=top_k)
@@ -213,6 +236,12 @@ def evaluate(
         int | None,
         typer.Option("--limit", help="Evaluate only the first N questions."),
     ] = None,
+    adapter: Annotated[
+        bool,
+        typer.Option(
+            "--adapter", help="Evaluate with the registered adapter endpoint."
+        ),
+    ] = False,
     with_ragas: Annotated[
         bool,
         typer.Option(
@@ -234,16 +263,32 @@ def evaluate(
         golden_items = golden_items[:limit]
 
     bundle = load_book_index(settings, book_id)
-    pipeline = build_pipeline(settings, bundle)
+
+    adapter_provenance: dict[str, Any] | None = None
+    if adapter:
+        adapter_report, adapter_dir = load_registered_adapter_or_fail(settings, book_id)
+        adapter_provenance = adapter_identity(adapter_report, adapter_dir)
+        pipeline = build_pipeline(settings, bundle, llm=adapter_llm_or_fail(settings))
+    else:
+        pipeline = build_pipeline(settings, bundle)
+
     results, samples = run_golden_set(pipeline, golden_items)
 
     index_metadata = (
         read_json(paths.index_metadata) if paths.index_metadata.exists() else {}
     )
 
+    generator: dict[str, Any] = {
+        "kind": "adapter" if adapter else "base",
+        "model": pipeline_model_name(pipeline),
+        "adapter": adapter_provenance,
+    }
     report: dict[str, Any] = {
         "book_id": book_id,
-        "model": pipeline_model_name(pipeline),
+        # Legacy top-level key, kept for backward compatibility; the
+        # authoritative generator identity lives in the `generator` block.
+        "model": generator["model"],
+        "generator": generator,
         "index": {
             "embedder": index_metadata.get("embedder"),
             "contextual": index_metadata.get("contextual"),
@@ -432,6 +477,138 @@ def synth(
     console.print(f"Dataset written to [cyan]{paths.dataset_dir}[/cyan]")
 
 
+@app.command("train")
+def train(
+    ctx: typer.Context,
+    book_id: Annotated[str, typer.Argument(help="Book id.")],
+    seed: Annotated[
+        int | None, typer.Option("--seed", help="Seed for the train/validation split.")
+    ] = None,
+    val_ratio: Annotated[
+        float | None,
+        typer.Option("--val-ratio", help="Fraction held out for validation."),
+    ] = None,
+    register: Annotated[
+        Path | None,
+        typer.Option(
+            "--register", help="Register an adapter directory downloaded from the T4."
+        ),
+    ] = None,
+    check_runtime: Annotated[
+        bool,
+        typer.Option(
+            "--check-runtime",
+            help="Report whether the heavy training stack is installed.",
+        ),
+    ] = False,
+    as_json: Annotated[
+        bool, typer.Option("--json", help="Print the report as JSON.")
+    ] = False,
+) -> None:
+    """Prepare RAFT data as chat examples, or register a T4 adapter."""
+    settings = settings_from_context(ctx)
+    if check_runtime:
+        render_runtime(check_training_runtime_or_fail())
+        return
+
+    if seed is not None or val_ratio is not None:
+        overrides: dict[str, Any] = {}
+        if seed is not None:
+            overrides["seed"] = seed
+        if val_ratio is not None:
+            overrides["val_ratio"] = val_ratio
+        settings.training = apply_overrides(settings.training, **overrides)
+
+    paths = BookPaths.for_book(settings.artifacts_dir, book_id)
+
+    if register is not None:
+        report, adapter_dir = register_adapter_or_fail(settings, book_id, register)
+        if as_json:
+            typer.echo(report.model_dump_json(indent=2))
+            return
+        render_registration(report, adapter_dir)
+        console.print(f"Adapter registered at [cyan]{adapter_dir}[/cyan]")
+        return
+
+    book, chunks = load_book_and_chunks(settings, book_id)
+    examples = load_training_examples(settings, book_id)
+    with console.status("Preparing training data..."):
+        bundle = prepare_training_or_fail(book, examples, chunks, settings, paths)
+
+    if as_json:
+        typer.echo(bundle.manifest.model_dump_json(indent=2))
+        return
+    render_training(bundle, paths)
+    console.print(f"Training data written to [cyan]{paths.training_dir}[/cyan]")
+
+
+@app.command("train-eval")
+def train_eval(
+    ctx: typer.Context,
+    book_id: Annotated[str, typer.Argument(help="Book id.")],
+    golden: Annotated[
+        Path | None,
+        typer.Option(
+            "--golden", help="Golden set file (default: artifacts/<book>/golden.yaml)."
+        ),
+    ] = None,
+    limit: Annotated[
+        int | None,
+        typer.Option("--limit", help="Evaluate only the first N questions."),
+    ] = None,
+    as_json: Annotated[
+        bool, typer.Option("--json", help="Print the full report as JSON.")
+    ] = False,
+) -> None:
+    """Compare the base model and the registered adapter on one golden set."""
+    settings = settings_from_context(ctx)
+    paths = BookPaths.for_book(settings.artifacts_dir, book_id)
+    golden_path = golden or paths.golden_yaml
+    if not golden_path.exists():
+        raise typer.BadParameter(
+            f"Golden set not found: {golden_path} (create one or pass --golden)"
+        )
+
+    golden_items = load_golden_set(golden_path)
+    if limit:
+        golden_items = golden_items[:limit]
+
+    adapter_report, adapter_dir = load_registered_adapter_or_fail(settings, book_id)
+    adapter_llm = adapter_llm_or_fail(settings)
+    bundle = load_book_index(settings, book_id)
+    runs = build_training_runs(
+        settings,
+        bundle,
+        adapter_llm,
+        adapter_identity=adapter_identity(adapter_report, adapter_dir),
+    )
+
+    index_metadata = (
+        read_json(paths.index_metadata) if paths.index_metadata.exists() else {}
+    )
+    with console.status("Comparing base and adapter..."):
+        comparison = run_comparison(
+            book_id,
+            golden_items,
+            runs,
+            index_identity={
+                "embedder": index_metadata.get("embedder"),
+                "contextual": index_metadata.get("contextual"),
+                "enriched_chunks": index_metadata.get("enriched_chunks"),
+            },
+            retrieval_identity=settings.retrieval.model_dump(),
+        )
+
+    paths.eval_dir.mkdir(parents=True, exist_ok=True)
+    write_json(paths.eval_training_json, comparison.model_dump())
+
+    if as_json:
+        typer.echo(comparison.model_dump_json(indent=2))
+        return
+    render_comparison(comparison)
+    console.print(f"Report written to [cyan]{paths.eval_training_json}[/cyan]")
+
+
 @app.command("books")
 def books(ctx: typer.Context) -> None:
     """List ingested books."""
@@ -488,11 +665,6 @@ def run_golden_set(
             }
         )
     return results, samples
-
-
-def pipeline_model_name(pipeline: QAPipeline) -> str:
-    """Return the generator's model identifier for the report."""
-    return getattr(pipeline.generator.llm, "name", "unknown")
 
 
 def configure_logging(verbose: bool) -> None:

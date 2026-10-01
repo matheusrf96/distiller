@@ -16,7 +16,9 @@ if TYPE_CHECKING:
 
     from ..evaluation import AblationReport
     from ..models import Answer, BookDocument
+    from ..paths import BookPaths
     from ..synthesis import DatasetManifest
+    from ..training import TrainingBundle, TrainingComparison, TrainingReport
 
 console = Console()
 
@@ -29,6 +31,16 @@ _ABLATION_COLUMNS = (
 _ABLATION_DELTA_COLUMNS = (
     ("retrieval_hit_rate", "Δ hit"),
     ("contains_rate", "Δ contains"),
+)
+_TRAINING_COLUMNS = (
+    ("contains_rate", "contains"),
+    ("refusal_accuracy", "refusal"),
+    ("citation_coverage", "citations"),
+)
+_TRAINING_DELTA_COLUMNS = (
+    ("contains_rate", "Δ contains"),
+    ("refusal_accuracy", "Δ refusal"),
+    ("citation_coverage", "Δ citations"),
 )
 
 
@@ -174,6 +186,118 @@ def render_synthesis(manifest: DatasetManifest, dataset_dir: Path) -> None:
             ),
             ("dataset", str(dataset_dir)),
         ],
+    )
+
+
+def render_training(bundle: TrainingBundle, paths: BookPaths) -> None:
+    """Render the training-preparation summary table shown after `train`."""
+    manifest = bundle.manifest
+    summary_table(
+        f"Training data: {manifest.book_id}",
+        [
+            ("train examples", str(manifest.train_count)),
+            ("validation examples", str(manifest.validation_count)),
+            (
+                "answerable / negative",
+                f"{manifest.answerable_count} / {manifest.unanswerable_count}",
+            ),
+            ("seed", str(manifest.seed)),
+            ("validation ratio", str(manifest.val_ratio)),
+            ("source hash", manifest.source_hash),
+            ("dataset hash", manifest.dataset_hash),
+            ("prompt hash", manifest.prompt_hash),
+            ("train split", str(paths.training_train_jsonl)),
+            ("validation split", str(paths.training_validation_jsonl)),
+            ("manifest", str(paths.training_manifest)),
+            ("qlora config", str(paths.training_qlora_json)),
+            ("notebook", str(paths.training_notebook)),
+        ],
+    )
+
+
+def render_comparison(report: TrainingComparison) -> None:
+    """Render the base-vs-adapter table with deltas versus the base variant.
+
+    Metrics and deltas are printed as two compact tables so every column stays
+    readable on an 80-column terminal.
+    """
+    metrics_table = Table(
+        title=f"Training comparison: {report.book_id} ({report.item_count} questions)"
+    )
+    metrics_table.add_column("variant")
+    metrics_table.add_column("generator")
+    for _, label in _TRAINING_COLUMNS:
+        metrics_table.add_column(label, justify="right")
+
+    deltas_table = Table(title=f"Deltas vs {report.baseline or 'base'}")
+    deltas_table.add_column("variant")
+    for _, label in _TRAINING_DELTA_COLUMNS:
+        deltas_table.add_column(label, justify="right")
+
+    for result in report.variants:
+        variant = result.variant
+        generator = f"{variant.kind} ({variant.model})"
+        if result.skipped_reason is None:
+            metrics_table.add_row(
+                variant.name,
+                generator,
+                *(
+                    _format_metric(result.metrics.get(metric))
+                    for metric, _ in _TRAINING_COLUMNS
+                ),
+            )
+            deltas_table.add_row(
+                variant.name,
+                *(
+                    _format_delta(report.deltas.get(variant.name, {}).get(metric))
+                    for metric, _ in _TRAINING_DELTA_COLUMNS
+                ),
+            )
+        else:
+            metrics_table.add_row(
+                variant.name, generator, *("—" for _ in _TRAINING_COLUMNS)
+            )
+            deltas_table.add_row(variant.name, *("—" for _ in _TRAINING_DELTA_COLUMNS))
+    console.print(metrics_table)
+    console.print(deltas_table)
+
+    for result in report.variants:
+        if result.skipped_reason:
+            console.print(
+                f"[yellow]{result.variant.name}: skipped — "
+                f"{result.skipped_reason}[/yellow]"
+            )
+
+
+def render_registration(report: TrainingReport, adapter_dir: Path) -> None:
+    """Render the adapter registration summary shown after `train --register`."""
+    summary_table(
+        f"Registered adapter: {report.book_id}",
+        [
+            ("base model", report.base_model),
+            ("dataset hash", report.dataset_hash),
+            ("config hash", report.config_hash),
+            ("dataset match", "yes" if report.dataset_hash_matches else "no"),
+            (
+                "examples",
+                f"{report.train_count} train / {report.validation_count} validation",
+            ),
+            ("loss points", str(len(report.loss_history))),
+            ("hardware", report.hardware or "-"),
+            ("adapter", str(adapter_dir)),
+        ],
+    )
+    if not report.dataset_hash_matches:
+        console.print(
+            "[yellow]Adapter was trained on a different dataset; comparison "
+            "results may not reflect the current split.[/yellow]"
+        )
+
+
+def render_runtime(versions: dict[str, str]) -> None:
+    """Render the `train --check-runtime` version table."""
+    summary_table(
+        "Training runtime", [(name, version) for name, version in versions.items()]
     )
 
 

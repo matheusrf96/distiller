@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from functools import partial
 from typing import TYPE_CHECKING, Any
 
@@ -16,11 +17,23 @@ from ..evaluation import (
 from ..exceptions import DistillerError
 from ..indexing import IndexBundle, build_index, load_index
 from ..ingest import ingest_book
-from ..llm import get_llm
+from ..llm import get_adapter_llm, get_llm
 from ..models import BookDocument, Chunk
 from ..optional_deps import is_available
 from ..paths import BookPaths
 from ..rag import Generator, QAPipeline, Retriever, get_reranker
+from ..training import (
+    GeneratorVariant,
+    QLoRAConfig,
+    TrainingBundle,
+    TrainingReport,
+    TrainingRun,
+    load_adapter_report,
+    load_raft_examples,
+    prepare_dataset,
+    register_adapter,
+    training_stack_versions,
+)
 from ..utils import read_json, read_jsonl
 
 if TYPE_CHECKING:
@@ -28,6 +41,10 @@ if TYPE_CHECKING:
 
     from ..config import Settings
     from ..evaluation import GoldenItem
+    from ..llm import LLMClient
+    from ..synthesis import RaftExample
+
+logger = logging.getLogger(__name__)
 
 
 def apply_overrides[ModelT: BaseModel](model: ModelT, **changes: Any) -> ModelT:
@@ -136,7 +153,11 @@ def load_book_index(settings: Settings, book_id: str) -> IndexBundle:
 
 
 def build_pipeline(
-    settings: Settings, bundle: IndexBundle, *, rerank: bool = False
+    settings: Settings,
+    bundle: IndexBundle,
+    *,
+    rerank: bool = False,
+    llm: LLMClient | None = None,
 ) -> QAPipeline:
     """Assemble the retrieval -> (rerank) -> generation pipeline for one book.
 
@@ -144,13 +165,15 @@ def build_pipeline(
         settings: Pipeline settings.
         bundle: Loaded index bundle for the book.
         rerank: Force-enable cross-encoder reranking for this run.
+        llm: Generator client override (the served adapter); defaults to the
+            configured base LLM.
 
     Returns:
         Pipeline that answers questions with citations.
     """
     retriever = Retriever(bundle, settings.retrieval)
     generator = Generator(
-        get_llm(settings),
+        llm or get_llm(settings),
         bundle.book.title,
         max_tokens=settings.llm.max_tokens,
     )
@@ -160,6 +183,242 @@ def build_pipeline(
     return QAPipeline(
         retriever, generator, reranker=reranker, settings=settings.retrieval
     )
+
+
+def pipeline_model_name(pipeline: QAPipeline) -> str:
+    """Return the generator's model identifier for the reports."""
+    return getattr(pipeline.generator.llm, "name", "unknown")
+
+
+def adapter_llm_or_fail(settings: Settings) -> LLMClient:
+    """Return the configured adapter client, or a friendly CLI error.
+
+    Args:
+        settings: Pipeline settings (adapter endpoint).
+
+    Returns:
+        Client pointed at the served LoRA adapter.
+
+    Raises:
+        typer.BadParameter: When no adapter endpoint is configured.
+    """
+    try:
+        return get_adapter_llm(settings)
+    except DistillerError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+
+def load_registered_adapter_or_fail(
+    settings: Settings, book_id: str
+) -> tuple[TrainingReport, Path]:
+    """Load the registered adapter report, or a friendly CLI error.
+
+    Args:
+        settings: Pipeline settings.
+        book_id: Book whose adapter registry should be read.
+
+    Returns:
+        The validated training report and the adapter directory.
+
+    Raises:
+        typer.BadParameter: When no adapter is registered or its run.json is
+            invalid.
+    """
+    paths = BookPaths.for_book(settings.artifacts_dir, book_id)
+    if not paths.adapter_run_json.exists():
+        raise typer.BadParameter(
+            f"No registered adapter for '{book_id}'. "
+            f"Run `distiller train {book_id} --register <dir>` first."
+        )
+    try:
+        return load_adapter_report(paths.adapter_dir), paths.adapter_dir
+    except DistillerError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+
+def adapter_identity(report: TrainingReport, adapter_dir: Path) -> dict[str, Any]:
+    """Build the adapter provenance block recorded in eval reports.
+
+    Args:
+        report: Registered adapter training report.
+        adapter_dir: Registry directory of the adapter.
+
+    Returns:
+        JSON-ready provenance: path, base model and dataset/config hashes.
+    """
+    return {
+        "path": str(adapter_dir),
+        "base_model": report.base_model,
+        "dataset_hash": report.dataset_hash,
+        "config_hash": report.config_hash,
+        "trained_at": report.created_at.isoformat(),
+    }
+
+
+def build_training_runs(
+    settings: Settings,
+    bundle: IndexBundle,
+    adapter_llm: LLMClient,
+    *,
+    adapter_identity: dict[str, Any] | None = None,
+) -> list[TrainingRun]:
+    """Pair the base and adapter generators with pipelines over one index.
+
+    Args:
+        settings: Pipeline settings (retrieval is shared by both variants).
+        bundle: Loaded index, reused by both variants.
+        adapter_llm: Client for the served LoRA adapter.
+        adapter_identity: Provenance recorded on the adapter variant.
+
+    Returns:
+        The base run first, then the adapter run.
+    """
+    base_pipeline = build_pipeline(settings, bundle)
+    adapter_pipeline = build_pipeline(settings, bundle, llm=adapter_llm)
+    return [
+        TrainingRun(
+            variant=GeneratorVariant(
+                name="base",
+                kind="base",
+                model=pipeline_model_name(base_pipeline),
+            ),
+            answer=partial(base_pipeline.ask),
+        ),
+        TrainingRun(
+            variant=GeneratorVariant(
+                name="adapter",
+                kind="adapter",
+                model=adapter_llm.name,
+                adapter=dict(adapter_identity or {}),
+            ),
+            answer=partial(adapter_pipeline.ask),
+        ),
+    ]
+
+
+def load_training_examples(settings: Settings, book_id: str) -> list[RaftExample]:
+    """Load ``dataset/raft.jsonl``, or a friendly CLI error.
+
+    Args:
+        settings: Pipeline settings.
+        book_id: Book whose RAFT dataset should be loaded.
+
+    Returns:
+        Validated RAFT examples.
+
+    Raises:
+        typer.BadParameter: When the dataset is missing or corrupt.
+    """
+    paths = BookPaths.for_book(settings.artifacts_dir, book_id)
+    if not paths.dataset_raft_jsonl.exists():
+        raise typer.BadParameter(
+            f"No RAFT dataset for '{book_id}'. Run `distiller synth {book_id}` first."
+        )
+    try:
+        return load_raft_examples(paths.dataset_raft_jsonl)
+    except DistillerError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+
+def prepare_training_or_fail(
+    book: BookDocument,
+    examples: list[RaftExample],
+    chunks: list[Chunk],
+    settings: Settings,
+    paths: BookPaths,
+) -> TrainingBundle:
+    """Prepare and write the training dataset, or a friendly CLI error.
+
+    Args:
+        book: Parsed book.
+        examples: RAFT examples from ``dataset/raft.jsonl``.
+        chunks: Indexed chunks.
+        settings: Pipeline settings (training seed and ratio).
+        paths: Book artifact layout to write into.
+
+    Returns:
+        The prepared training bundle.
+
+    Raises:
+        typer.BadParameter: On formatting or validation failures.
+    """
+    try:
+        return prepare_dataset(book, examples, chunks, settings.training, paths=paths)
+    except DistillerError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+
+def register_adapter_or_fail(
+    settings: Settings, book_id: str, source_dir: Path
+) -> tuple[TrainingReport, Path]:
+    """Validate and register a T4 adapter directory, or a friendly CLI error.
+
+    Args:
+        settings: Pipeline settings.
+        book_id: Book the adapter must belong to.
+        source_dir: Adapter directory downloaded from the T4 run.
+
+    Returns:
+        The registered report and the registry directory.
+
+    Raises:
+        typer.BadParameter: When training artifacts are missing or the adapter
+            fails validation.
+    """
+    paths = BookPaths.for_book(settings.artifacts_dir, book_id)
+    if not paths.training_qlora_json.exists():
+        raise typer.BadParameter(
+            f"No QLoRA configuration for '{book_id}'. "
+            f"Run `distiller train {book_id}` first."
+        )
+    try:
+        config = QLoRAConfig.model_validate(read_json(paths.training_qlora_json))
+    except (OSError, ValueError) as exc:
+        raise typer.BadParameter(
+            f"Training configuration {paths.training_qlora_json} is unreadable: "
+            f"{exc}. Re-run `distiller train {book_id}`."
+        ) from exc
+    try:
+        report = register_adapter(
+            source_dir,
+            paths.adapter_dir,
+            book_id=book_id,
+            expected_base_model=config.base_model,
+            expected_dataset_hash=_expected_dataset_hash(paths),
+        )
+    except DistillerError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+    return report, paths.adapter_dir
+
+
+def check_training_runtime_or_fail() -> dict[str, str]:
+    """Report the installed training-stack versions, or the missing-extra error.
+
+    Returns:
+        Mapping module name -> version.
+
+    Raises:
+        typer.BadParameter: When the ``training`` extra is not installed.
+    """
+    try:
+        return training_stack_versions()
+    except DistillerError as exc:
+        raise typer.BadParameter(str(exc)) from exc
+
+
+def _expected_dataset_hash(paths: BookPaths) -> str | None:
+    if not paths.training_manifest.exists():
+        return None
+    try:
+        value = read_json(paths.training_manifest).get("dataset_hash")
+    except (OSError, ValueError) as exc:
+        logger.warning(
+            "Ignoring unreadable training manifest %s: %s",
+            paths.training_manifest,
+            exc,
+        )
+        return None
+    return str(value) if value else None
 
 
 def load_book_and_chunks(

@@ -5,10 +5,13 @@ from __future__ import annotations
 import json
 from typing import TYPE_CHECKING
 
+import pytest
 from typer.testing import CliRunner
 
 from distiller.cli.main import app
 from distiller.evaluation.golden import GoldenItem, save_golden
+from distiller.optional_deps import is_available
+from distiller.training.qlora import TRAINING_MODULES
 
 if TYPE_CHECKING:
     from collections.abc import Callable
@@ -25,6 +28,11 @@ def invoke_cli(arguments: list[str]):
         f"{arguments} failed:\n{result.output}\n{result.exception!r}"
     )
     return result
+
+
+def flat_output(result) -> str:
+    """Normalize captured CLI output so wrapped panel/table lines stay searchable."""
+    return " ".join(result.output.replace("│", " ").split())
 
 
 def test_full_offline_pipeline(
@@ -354,3 +362,358 @@ def test_synth_requires_an_index(
     assert result.exit_code != 0
     assert "distiller index" in result.output
     assert "Traceback" not in result.output
+
+
+def _prepare_training_inputs(epub_factory: Callable[..., Path], tmp_path: Path) -> None:
+    """Ingest, index and synthesize a small dataset that contains negatives."""
+    epub_path = epub_factory(tmp_path / "lantern.epub")
+    invoke_cli(["ingest", str(epub_path)])
+    invoke_cli(["index", BOOK_ID])
+    invoke_cli(
+        [
+            "synth",
+            BOOK_ID,
+            "--questions-per-chunk",
+            "2",
+            "--distractors",
+            "1",
+            "--negative-ratio",
+            "0.5",
+            "--seed",
+            "5",
+        ]
+    )
+
+
+def _write_training_golden(tmp_path: Path) -> Path:
+    """Write a two-item golden set for the training comparison."""
+    golden_path = tmp_path / "training-golden.yaml"
+    save_golden(
+        golden_path,
+        [
+            GoldenItem(
+                question="What happened to the lantern during the storm?",
+                expected_chapters=["Chapter Two"],
+                expected_answer_contains=["cracked"],
+            ),
+            GoldenItem(question="Who won the village sailing race?", answerable=False),
+        ],
+    )
+    return golden_path
+
+
+def _register_fake_adapter(
+    offline_env: Path,
+    tmp_path: Path,
+    adapter_factory: Callable[..., Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> dict:
+    """Register a fake adapter matching the book's manifest; return the manifest."""
+    manifest = json.loads(
+        (offline_env / BOOK_ID / "training" / "manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    source = adapter_factory(
+        tmp_path / "adapter-download",
+        book_id=BOOK_ID,
+        base_model="Qwen/Qwen3-4B",
+        dataset_hash=manifest["dataset_hash"],
+    )
+    monkeypatch.setenv("DISTILLER_ADAPTER__MODEL", "fake")
+    invoke_cli(["train", BOOK_ID, "--register", str(source)])
+    return manifest
+
+
+def test_train_command_writes_training_artifacts(
+    offline_env: Path,
+    epub_factory: Callable[..., Path],
+    tmp_path: Path,
+) -> None:
+    """`train` formats, validates, splits and emits the notebook (REQ-TR-005)."""
+    _prepare_training_inputs(epub_factory, tmp_path)
+
+    result = invoke_cli(["train", BOOK_ID, "--seed", "5", "--val-ratio", "0.34"])
+    assert "Training data" in result.output
+
+    training = offline_env / BOOK_ID / "training"
+    manifest = json.loads((training / "manifest.json").read_text(encoding="utf-8"))
+    assert manifest["seed"] == 5
+    assert manifest["val_ratio"] == 0.34
+    assert (
+        manifest["train_count"] + manifest["validation_count"]
+        == manifest["source_count"]
+    )
+    assert manifest["unanswerable_count"] >= 1
+    assert (training / "train.jsonl").exists()
+    assert (training / "validation.jsonl").exists()
+    assert (training / "qlora.json").exists()
+    notebook = json.loads((training / "train_t4.ipynb").read_text(encoding="utf-8"))
+    assert notebook["nbformat"] == 4
+
+    payload = json.loads(
+        invoke_cli(
+            ["train", BOOK_ID, "--seed", "5", "--val-ratio", "0.34", "--json"]
+        ).output
+    )
+    assert payload == json.loads(
+        (training / "manifest.json").read_text(encoding="utf-8")
+    )
+
+
+def test_train_requires_dataset(
+    offline_env: Path,
+    epub_factory: Callable[..., Path],
+    tmp_path: Path,
+) -> None:
+    """A missing RAFT dataset names `distiller synth` (REQ-TR-015)."""
+    epub_path = epub_factory(tmp_path / "lantern.epub")
+    invoke_cli(["ingest", str(epub_path)])
+    invoke_cli(["index", BOOK_ID])
+
+    result = runner.invoke(app, ["train", BOOK_ID])
+
+    assert result.exit_code != 0
+    assert "distiller synth" in flat_output(result)
+    assert "Traceback" not in result.output
+
+
+def test_train_reports_validation_errors(
+    offline_env: Path,
+    epub_factory: Callable[..., Path],
+    tmp_path: Path,
+) -> None:
+    """Malformed datasets abort with the error list and no traceback (REQ-TR-004)."""
+    _prepare_training_inputs(epub_factory, tmp_path)
+    raft_path = offline_env / BOOK_ID / "dataset" / "raft.jsonl"
+    rows = raft_path.read_text(encoding="utf-8").strip().splitlines()
+    payload = json.loads(rows[0])
+    payload["contexts"] = []
+    rows[0] = json.dumps(payload)
+    raft_path.write_text("\n".join(rows) + "\n", encoding="utf-8")
+
+    result = runner.invoke(app, ["train", BOOK_ID])
+
+    assert result.exit_code != 0
+    assert "validation failed" in flat_output(result)
+    assert not (offline_env / BOOK_ID / "training").exists()
+    assert "Traceback" not in result.output
+
+
+def test_train_check_runtime_requires_the_extra(offline_env: Path) -> None:
+    """`--check-runtime` raises the missing-extra error naming `training`.
+
+    Covers REQ-TR-013.
+    """
+    if all(is_available(module) for module in TRAINING_MODULES):
+        pytest.skip("training stack is installed in this environment")
+
+    result = runner.invoke(app, ["train", BOOK_ID, "--check-runtime"])
+
+    assert result.exit_code != 0
+    assert "--extra training" in flat_output(result)
+    assert "Traceback" not in result.output
+
+
+def test_train_register_rejects_a_wrong_adapter(
+    offline_env: Path,
+    epub_factory: Callable[..., Path],
+    tmp_path: Path,
+    adapter_factory: Callable[..., Path],
+) -> None:
+    """Registration validates the book id and copies nothing on failure (REQ-TR-008)."""
+    _prepare_training_inputs(epub_factory, tmp_path)
+    source = adapter_factory(tmp_path / "wrong-adapter", book_id="another-book")
+
+    # before `train` there is no configuration to validate against
+    result = runner.invoke(app, ["train", BOOK_ID, "--register", str(source)])
+    assert result.exit_code != 0
+    assert "distiller train" in flat_output(result)
+    assert "Traceback" not in result.output
+
+    invoke_cli(["train", BOOK_ID])
+    result = runner.invoke(app, ["train", BOOK_ID, "--register", str(source)])
+    assert result.exit_code != 0
+    assert "another-book" in flat_output(result)
+    assert "Traceback" not in result.output
+    assert not (offline_env / BOOK_ID / "training" / "adapter").exists()
+
+
+def test_ask_and_eval_require_a_registered_adapter(
+    offline_env: Path,
+    epub_factory: Callable[..., Path],
+    tmp_path: Path,
+    adapter_factory: Callable[..., Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Adapter commands fail actionably without registration or endpoint.
+
+    Covers REQ-TR-009 and REQ-TR-015.
+    """
+    _prepare_training_inputs(epub_factory, tmp_path)
+    monkeypatch.setenv("DISTILLER_ADAPTER__MODEL", "fake")
+    golden_path = _write_training_golden(tmp_path)
+
+    result = runner.invoke(app, ["ask", BOOK_ID, "What happened?", "--adapter"])
+    assert result.exit_code != 0
+    assert "--register" in flat_output(result)
+    assert "Traceback" not in result.output
+
+    result = runner.invoke(
+        app, ["eval", BOOK_ID, "--golden", str(golden_path), "--adapter"]
+    )
+    assert result.exit_code != 0
+    assert "--register" in flat_output(result)
+    assert "Traceback" not in result.output
+
+    result = runner.invoke(app, ["train-eval", BOOK_ID, "--golden", str(golden_path)])
+    assert result.exit_code != 0
+    assert "--register" in flat_output(result)
+    assert "Traceback" not in result.output
+
+    # with a registration but no endpoint, the configuration hint is shown
+    invoke_cli(["train", BOOK_ID])
+    manifest = json.loads(
+        (offline_env / BOOK_ID / "training" / "manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    source = adapter_factory(
+        tmp_path / "adapter-download",
+        book_id=BOOK_ID,
+        dataset_hash=manifest["dataset_hash"],
+    )
+    invoke_cli(["train", BOOK_ID, "--register", str(source)])
+    monkeypatch.delenv("DISTILLER_ADAPTER__MODEL", raising=False)
+
+    result = runner.invoke(app, ["ask", BOOK_ID, "What happened?", "--adapter"])
+    assert result.exit_code != 0
+    assert "DISTILLER_ADAPTER__MODEL" in flat_output(result)
+    assert "Traceback" not in result.output
+
+
+def test_ask_and_eval_select_a_registered_adapter(
+    offline_env: Path,
+    epub_factory: Callable[..., Path],
+    tmp_path: Path,
+    adapter_factory: Callable[..., Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`--adapter` answers with the adapter endpoint and records provenance.
+
+    Covers REQ-TR-009.
+    """
+    _prepare_training_inputs(epub_factory, tmp_path)
+    invoke_cli(["train", BOOK_ID, "--seed", "5"])
+    manifest = _register_fake_adapter(
+        offline_env, tmp_path, adapter_factory, monkeypatch
+    )
+
+    result = invoke_cli(["ask", BOOK_ID, "What happened to the lantern?", "--adapter"])
+    assert "Chapter" in result.output
+
+    golden_path = _write_training_golden(tmp_path)
+    invoke_cli(["eval", BOOK_ID, "--golden", str(golden_path), "--adapter"])
+
+    report = json.loads(
+        (offline_env / BOOK_ID / "eval" / "report.json").read_text(encoding="utf-8")
+    )
+    assert report["generator"]["kind"] == "adapter"
+    assert report["generator"]["model"] == report["model"]
+    assert report["generator"]["adapter"]["dataset_hash"] == manifest["dataset_hash"]
+    assert report["generator"]["adapter"]["base_model"] == "Qwen/Qwen3-4B"
+
+
+def test_eval_records_generator_identity(
+    offline_env: Path,
+    epub_factory: Callable[..., Path],
+    tmp_path: Path,
+) -> None:
+    """A plain eval records `kind: base` next to the legacy model key (REQ-TR-010)."""
+    epub_path = epub_factory(tmp_path / "lantern.epub")
+    invoke_cli(["ingest", str(epub_path)])
+    invoke_cli(["index", BOOK_ID])
+    golden_path = _write_training_golden(tmp_path)
+
+    invoke_cli(["eval", BOOK_ID, "--golden", str(golden_path)])
+
+    report = json.loads(
+        (offline_env / BOOK_ID / "eval" / "report.json").read_text(encoding="utf-8")
+    )
+    assert report["generator"] == {"kind": "base", "model": "fake", "adapter": None}
+    assert report["model"] == report["generator"]["model"] == "fake"
+
+
+def test_train_eval_command_end_to_end(
+    offline_env: Path,
+    epub_factory: Callable[..., Path],
+    tmp_path: Path,
+    adapter_factory: Callable[..., Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """`train-eval` writes a shared-identity comparison with deltas (REQ-TR-011/012)."""
+    _prepare_training_inputs(epub_factory, tmp_path)
+    invoke_cli(["train", BOOK_ID, "--seed", "5", "--val-ratio", "0.34"])
+    manifest = _register_fake_adapter(
+        offline_env, tmp_path, adapter_factory, monkeypatch
+    )
+    golden_path = _write_training_golden(tmp_path)
+
+    result = invoke_cli(["train-eval", BOOK_ID, "--golden", str(golden_path)])
+    assert "Δ contains" in flat_output(result)
+
+    report = json.loads(
+        (offline_env / BOOK_ID / "eval" / "training.json").read_text(encoding="utf-8")
+    )
+    assert report["baseline"] == "base"
+    assert [variant["variant"]["name"] for variant in report["variants"]] == [
+        "base",
+        "adapter",
+    ]
+    assert all(variant["skipped_reason"] is None for variant in report["variants"])
+    assert all(variant["metrics"]["item_count"] == 2 for variant in report["variants"])
+    assert report["index"]["embedder"] == "hash:512"
+    assert report["retrieval"]["top_k_final"] == 8
+    assert (
+        report["variants"][1]["variant"]["adapter"]["dataset_hash"]
+        == manifest["dataset_hash"]
+    )
+    assert report["deltas"]["adapter"]["contains_rate"] == 0.0
+
+    json_result = invoke_cli(
+        ["train-eval", BOOK_ID, "--golden", str(golden_path), "--json"]
+    )
+    assert json.loads(json_result.output) == report
+
+
+def test_training_pipeline_end_to_end(
+    offline_env: Path,
+    epub_factory: Callable[..., Path],
+    tmp_path: Path,
+    adapter_factory: Callable[..., Path],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The full offline chain completes without GPU, network or heavy deps.
+
+    Covers REQ-TR-014.
+    """
+    _prepare_training_inputs(epub_factory, tmp_path)
+    invoke_cli(["train", BOOK_ID])
+    manifest = _register_fake_adapter(
+        offline_env, tmp_path, adapter_factory, monkeypatch
+    )
+    golden_path = _write_training_golden(tmp_path)
+
+    invoke_cli(["train-eval", BOOK_ID, "--golden", str(golden_path)])
+
+    report = json.loads(
+        (offline_env / BOOK_ID / "eval" / "training.json").read_text(encoding="utf-8")
+    )
+    assert report["book_id"] == BOOK_ID
+    assert {variant["variant"]["kind"] for variant in report["variants"]} == {
+        "base",
+        "adapter",
+    }
+    assert report["item_count"] == 2
+    assert report["deltas"]["adapter"]["contains_rate"] == 0.0
+    assert manifest["unanswerable_count"] >= 1
