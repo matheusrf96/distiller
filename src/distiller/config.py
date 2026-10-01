@@ -193,6 +193,53 @@ class EvaluationSettings(BaseModel):
     max_samples: int = 50
 
 
+class TrainingSettings(BaseModel):
+    """Training dataset preparation settings.
+
+    Attributes:
+        seed: Seed for the deterministic train/validation split.
+        val_ratio: Fraction of examples held out for validation.
+    """
+
+    seed: int = 13
+    val_ratio: float = 0.1
+
+    @model_validator(mode="after")
+    def _validate_bounds(self) -> TrainingSettings:
+        if self.seed < 0:
+            raise ValueError("training.seed must be >= 0")
+        if not 0.0 < self.val_ratio < 1.0:
+            raise ValueError("training.val_ratio must be between 0 and 1")
+        return self
+
+
+class AdapterSettings(BaseModel):
+    """Served LoRA adapter endpoint settings.
+
+    ``model=None`` means "no adapter configured"; the sentinel ``"fake"``
+    selects the offline client, exactly like :class:`LLMSettings`.
+
+    Attributes:
+        base_url: Endpoint base URL of the served adapter.
+        api_key: API key, when the endpoint requires one.
+        model: Served model name; None disables adapter-backed commands.
+        timeout: Request timeout in seconds.
+    """
+
+    base_url: str | None = None
+    api_key: str | None = None
+    model: str | None = None
+    timeout: float = 120.0
+
+    @model_validator(mode="after")
+    def _validate_bounds(self) -> AdapterSettings:
+        if self.timeout <= 0:
+            raise ValueError("adapter.timeout must be > 0")
+        if self.model is not None and not self.model.strip():
+            raise ValueError("adapter.model must not be blank")
+        return self
+
+
 class Settings(BaseSettings):
     """Root configuration: environment variables plus optional TOML file.
 
@@ -205,6 +252,8 @@ class Settings(BaseSettings):
         retrieval: Retrieval and reranking settings.
         store: Vector store settings.
         evaluation: Evaluation settings.
+        training: Training dataset preparation settings.
+        adapter: Served LoRA adapter endpoint settings.
     """
 
     model_config = SettingsConfigDict(
@@ -224,6 +273,8 @@ class Settings(BaseSettings):
     retrieval: RetrievalSettings = Field(default_factory=RetrievalSettings)
     store: StoreSettings = Field(default_factory=StoreSettings)
     evaluation: EvaluationSettings = Field(default_factory=EvaluationSettings)
+    training: TrainingSettings = Field(default_factory=TrainingSettings)
+    adapter: AdapterSettings = Field(default_factory=AdapterSettings)
 
     @classmethod
     def settings_customise_sources(

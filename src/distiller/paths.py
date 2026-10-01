@@ -99,6 +99,51 @@ class BookPaths:
         """Dataset provenance and counts (``dataset/manifest.json``)."""
         return self.dataset_dir / "manifest.json"
 
+    @property
+    def training_dir(self) -> Path:
+        """Training artifacts directory (``training/``)."""
+        return self.root / "training"
+
+    @property
+    def training_train_jsonl(self) -> Path:
+        """Chat-formatted training split (``training/train.jsonl``)."""
+        return self.training_dir / "train.jsonl"
+
+    @property
+    def training_validation_jsonl(self) -> Path:
+        """Chat-formatted held-out split (``training/validation.jsonl``)."""
+        return self.training_dir / "validation.jsonl"
+
+    @property
+    def training_manifest(self) -> Path:
+        """Training dataset provenance and counts (``training/manifest.json``)."""
+        return self.training_dir / "manifest.json"
+
+    @property
+    def training_qlora_json(self) -> Path:
+        """Pinned QLoRA configuration (``training/qlora.json``)."""
+        return self.training_dir / "qlora.json"
+
+    @property
+    def training_notebook(self) -> Path:
+        """Self-contained T4 training notebook (``training/train_t4.ipynb``)."""
+        return self.training_dir / "train_t4.ipynb"
+
+    @property
+    def adapter_dir(self) -> Path:
+        """Registered LoRA adapter directory (``training/adapter/``)."""
+        return self.training_dir / "adapter"
+
+    @property
+    def adapter_run_json(self) -> Path:
+        """Training report of the registered adapter (``training/adapter/run.json``)."""
+        return self.adapter_dir / "run.json"
+
+    @property
+    def eval_training_json(self) -> Path:
+        """Base-vs-adapter comparison report (``eval/training.json``)."""
+        return self.eval_dir / "training.json"
+
     def ensure(self) -> BookPaths:
         """Create the artifact directory if it does not exist yet.
 

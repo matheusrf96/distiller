@@ -35,6 +35,10 @@ class IndexBuildError(DistillerError):
     """Raised when an index cannot be built or loaded consistently."""
 
 
+class TrainingError(DistillerError):
+    """Raised when training data, configuration or an adapter is unusable."""
+
+
 class MissingDependencyError(DistillerError):
     """Raised when a feature is used without its optional dependency installed."""
 
