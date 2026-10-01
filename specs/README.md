@@ -31,7 +31,7 @@ draft ──(approve)──> active ──(implement)──> archived
 | [SDD-0001](archived/SDD-0001-contextual-retrieval.md) | Contextual Retrieval | ✅ done | LLM-generated situating context per chunk for embedding/BM25 (Phase 1) |
 | [SDD-0002](archived/SDD-0002-reranking-ablations.md) | Reranking Ablations | ✅ done | Compare retrieval configs (rerank on/off, top-k sweep) on one golden set (Phase 1) |
 | [SDD-0003](archived/SDD-0003-synthetic-qa.md) | Synthetic QA + RAFT Dataset | ✅ done | Grounded QA generation, deterministic filtering, RAFT training examples (Phase 2) |
-| [SDD-0004](active/SDD-0004-qwen3-qlora-training.md) | Qwen3-4B QLoRA Training | 🔧 approved | Phase 3 harness: RAFT→chat formatting, QLoRA config, T4 runbook, adapter registry, base-vs-adapter eval |
+| [SDD-0004](archived/SDD-0004-qwen3-qlora-training.md) | Qwen3-4B QLoRA Training | ✅ done | Phase 3 harness: RAFT→chat formatting, QLoRA config, T4 runbook, adapter registry, base-vs-adapter eval |
 
 ## File naming
 

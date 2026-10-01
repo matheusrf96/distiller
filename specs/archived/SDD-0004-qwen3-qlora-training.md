@@ -1,9 +1,10 @@
 ---
 id: SDD-0004
-status: approved
+status: done
 supersedes:
 owner: matheus
 created: 2026-09-30
+archived: 2026-10-01
 ---
 
 # Qwen3-4B QLoRA Training (Phase 3)
@@ -389,8 +390,13 @@ Decided at approval (2026-09-30):
 
 ## Outcomes
 
-<!-- Filled on archival. -->
-
-- **Implemented in**: <commit SHAs>
-- **Spec archived**: <date>
-- **Post-mortem notes**: <optional>
+- **Implemented in**: `de8122e` (training extra), `ab4105f` (shared delta helper), `26cb2a4` (training harness), `504befa` (CLI), `a943daf` (runbook + docs)
+- **Spec archived**: 2026-10-01
+- **Post-mortem notes**: three deviations surfaced during implementation and were
+  accepted: a new `TrainingError(DistillerError)` for the failure domain,
+  `pipeline_model_name` moved from `cli/main.py` to `cli/context.py` to break a
+  circular import, and `render_comparison` split into metrics + deltas tables for
+  80-column readability. The register→compare chain was validated without a GPU
+  by registering a hand-built fake adapter directory (real `run.json` schema), so
+  the only unverified step is the T4 training run itself — covered by the
+  runbook, not by CI.
