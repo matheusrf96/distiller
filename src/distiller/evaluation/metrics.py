@@ -29,12 +29,13 @@ class ItemResult(DomainModel):
         answerable: Whether the golden set expects an answer.
         refused: Whether the model refused.
         answer_text: The generated answer text.
-        retrieved_chapters: Chapters present in the retrieved contexts.
+        retrieved_chapters: Chapters present in the retrieved contexts, plus
+            the titles of cited summary nodes (global answers).
         expected_chapters: Chapters the golden set expects in retrieval.
         expected_contains: Snippets the answer should contain.
         contains_hits: Number of expected snippets found in the answer.
         contains_total: Number of expected snippets checked.
-        citation_count: Number of citations in the answer.
+        citation_count: Number of chunk and summary citations in the answer.
     """
 
     question: str
@@ -80,13 +81,16 @@ def evaluate_item(golden_item: GoldenItem, answer: Answer) -> ItemResult:
         refused=answer.refused,
         answer_text=answer.text,
         retrieved_chapters=_unique(
-            [context.chunk.chapter for context in answer.contexts]
+            [
+                *(context.chunk.chapter for context in answer.contexts),
+                *(citation.title for citation in answer.summary_citations),
+            ]
         ),
         expected_chapters=golden_item.expected_chapters,
         expected_contains=golden_item.expected_answer_contains,
         contains_hits=hits,
         contains_total=len(golden_item.expected_answer_contains),
-        citation_count=len(answer.citations),
+        citation_count=len(answer.citations) + len(answer.summary_citations),
     )
 
 

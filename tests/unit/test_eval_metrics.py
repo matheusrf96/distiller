@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from distiller.evaluation import evaluate_item, summarize
 from distiller.evaluation.golden import GoldenItem
-from distiller.models import Answer, Chunk, Citation, RetrievedChunk
+from distiller.models import Answer, Chunk, Citation, RetrievedChunk, SummaryCitation
 
 
 def build_answer(
@@ -90,6 +90,48 @@ def test_summarize_computes_expected_metrics() -> None:
 def test_summarize_handles_empty_results() -> None:
     """An empty run reports zero items instead of dividing by zero."""
     assert summarize([]) == {"item_count": 0}
+
+
+def test_summary_citations_count_toward_citation_coverage() -> None:
+    """Global summary citations count like chunk citations (AC11).
+
+    A thematic golden item with ``expected_answer_contains`` and no
+    ``expected_chapters`` yields a non-null ``contains_rate`` and
+    ``citation_coverage``, and an unanswerable item affects
+    ``refusal_accuracy``.
+    """
+    golden = GoldenItem(
+        question="What are the book's main themes?",
+        expected_answer_contains=["the lighthouse"],
+    )
+    answer = Answer(
+        question=golden.question,
+        text='The book is about "the lighthouse" [1].',
+        summary_citations=[
+            SummaryCitation(index=1, node_id="b:root", title="The Book", level=3)
+        ],
+        mode="global",
+    )
+    unanswerable = GoldenItem(question="Who won the race?", answerable=False)
+    refusal = Answer(
+        question=unanswerable.question,
+        text="I couldn't find that in The Book.",
+        refused=True,
+        mode="global",
+    )
+
+    results = [
+        evaluate_item(golden, answer),
+        evaluate_item(unanswerable, refusal),
+    ]
+    summary = summarize(results)
+
+    assert results[0].contains_rate == 1.0
+    assert results[0].citation_count == 1
+    assert results[0].retrieved_chapters == ["The Book"]
+    assert summary["contains_rate"] == 1.0
+    assert summary["citation_coverage"] == 1.0
+    assert summary["refusal_accuracy"] == 1.0
 
 
 def test_golden_item_roundtrip(tmp_path) -> None:
