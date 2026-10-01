@@ -1,9 +1,10 @@
 ---
 id: SDD-0006
-status: approved
+status: done
 supersedes:
 owner: matheus
 created: 2026-10-01
+archived: 2026-10-01
 ---
 
 # Hierarchical Summary Tree + Global Answering (Phase 5)
@@ -396,8 +397,18 @@ artifacts/<book>/
 
 ## Outcomes
 
-<!-- Filled on archival. -->
-
-- **Implemented in**: <commit SHAs>
-- **Spec archived**: <date>
-- **Post-mortem notes**: <optional>
+- **Implemented in**: `1b94ce2` (spec), `c4a729d` (thematic package), `d682d60`
+  (metrics), `83261c4` (CLI), `54cf81b` (README/AGENTS), `9d613e9`
+  (citation-marker hardening)
+- **Spec archived**: 2026-10-01
+- **Post-mortem notes**: the code review before commit surfaced one functional
+  nuance the spec's design left implicit — map partials cite their own single
+  document as `[1]`, so echoing one into the reduce answer could misattribute a
+  citation; partials are now stripped of internal markers before the reduce call
+  (`9d613e9`, covered by `test_reduce_strips_map_citation_markers`). Otherwise
+  the spec held up: 14/14 ACs covered, no new runtime dependency, and the whole
+  chain (`ingest → index → tree build → ask --global → eval --global`) runs
+  offline with the fake LLM and hash embedder. Two review suggestions were left
+  as deliberate follow-ups: narrowing the summarizer's broad exception catch and
+  replacing `answering_model_name`'s `getattr` fallback with a Protocol
+  attribute.
