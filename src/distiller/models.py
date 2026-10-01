@@ -199,24 +199,49 @@ class Citation(DomainModel):
         )
 
 
+class SummaryCitation(DomainModel):
+    """A machine-checkable reference from a global answer back to a tree node.
+
+    Global (map-reduce) answers cite summary nodes instead of chunks; the local
+    :class:`Citation` keeps its chunk contract.
+
+    Attributes:
+        index: The ``[n]`` marker used in the answer text.
+        node_id: Summary tree node the marker refers to.
+        title: Node title for display.
+        level: Node level (1 chapter, 2 window, 3 root).
+    """
+
+    index: int
+    node_id: str
+    title: str
+    level: int
+
+
 class Answer(DomainModel):
     """A grounded answer with citations, contexts and model provenance.
 
     Attributes:
         question: The question that was asked.
         text: The model's (or refusal) text.
-        citations: Citations extracted from ``text``.
+        citations: Chunk citations extracted from ``text`` (local mode).
+        summary_citations: Summary node citations extracted from ``text``
+            (global mode).
         contexts: Chunks that were provided to the model.
         model: Identifier of the generating model.
         refused: True when the book did not contain the answer.
+        mode: Which pipeline answered: ``local`` retrieval or ``global``
+            map-reduce over the summary tree.
     """
 
     question: str
     text: str
     citations: list[Citation] = Field(default_factory=list)
+    summary_citations: list[SummaryCitation] = Field(default_factory=list)
     contexts: list[RetrievedChunk] = Field(default_factory=list)
     model: str | None = None
     refused: bool = False
+    mode: Literal["local", "global"] = "local"
 
 
 def format_location(

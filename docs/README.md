@@ -8,6 +8,7 @@ docstrings; this directory holds the process and reference docs.
 | Document | Purpose |
 |----------|---------|
 | [Contributing & Conventions](CONTRIBUTING.md) | Code style, testing, exceptions, docs rules |
+| [Thematic questions](thematic-questions.md) | Phase 5: summary tree build, global ask/eval, thematic golden items |
 | [QLoRA runbook](qlora-runbook.md) | Manual T4 training: upload, train, download, register, compare |
 | [GGUF runbook](gguf-runbook.md) | Phase 4: export download, register, serve with Ollama/llama.cpp, evaluate |
 | [../README.md](../README.md) | Install, quickstart, architecture overview |

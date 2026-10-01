@@ -35,6 +35,10 @@ class IndexBuildError(DistillerError):
     """Raised when an index cannot be built or loaded consistently."""
 
 
+class ThematicError(DistillerError):
+    """Raised when a summary tree or a global answer cannot be built."""
+
+
 class TrainingError(DistillerError):
     """Raised when training data, configuration or an adapter is unusable."""
 

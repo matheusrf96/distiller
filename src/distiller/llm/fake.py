@@ -17,6 +17,7 @@ if TYPE_CHECKING:
 _DOC_RE = re.compile(r'<doc id="1"[^>]*>\n(.*?)\n</doc>', re.DOTALL)
 _EXCERPT_RE = re.compile(r"<excerpt>\n(.*?)\n</excerpt>", re.DOTALL)
 _CHUNK_RE = re.compile(r"<chunk>\n(.*?)\n</chunk>", re.DOTALL)
+_SOURCE_RE = re.compile(r"<source>\n(.*?)\n</source>", re.DOTALL)
 _QUESTION_COUNT_RE = re.compile(r"Write exactly (\d+) question")
 _REFUSAL_TEMPLATE = "I couldn't find that in {title}."
 
@@ -66,6 +67,7 @@ class FakeLLM:
 
         * ``<excerpt>`` blocks (contextual enrichment) → one situating sentence;
         * ``<chunk>`` blocks (synthetic QA) → a JSON array of grounded pairs;
+        * ``<source>`` blocks (thematic summaries) → one summary sentence;
         * ``<doc>`` blocks (book QA) → the first document with a ``[1]`` citation;
         * anything else → the refusal sentence.
 
@@ -91,6 +93,11 @@ class FakeLLM:
         chunk = _CHUNK_RE.search(user)
         if chunk:
             return self._qa_json(" ".join(chunk.group(1).split()), user)
+
+        source = _SOURCE_RE.search(user)
+        if source:
+            snippet = " ".join(source.group(1).split())[:160].rstrip(" .")
+            return f"This part of the book covers: {snippet}."
 
         match = _DOC_RE.search(user)
         if not match:

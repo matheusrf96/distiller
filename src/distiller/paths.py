@@ -75,6 +75,26 @@ class BookPaths:
         return self.root / "enrichment.jsonl"
 
     @property
+    def thematic_dir(self) -> Path:
+        """Thematic summary tree directory (``thematic/``)."""
+        return self.root / "thematic"
+
+    @property
+    def thematic_tree_json(self) -> Path:
+        """Hierarchical summary tree (``thematic/tree.json``)."""
+        return self.thematic_dir / "tree.json"
+
+    @property
+    def thematic_manifest_json(self) -> Path:
+        """Tree build provenance and counts (``thematic/manifest.json``)."""
+        return self.thematic_dir / "manifest.json"
+
+    @property
+    def thematic_summaries_jsonl(self) -> Path:
+        """Append-only node summary cache (``thematic/summaries.jsonl``)."""
+        return self.thematic_dir / "summaries.jsonl"
+
+    @property
     def dataset_dir(self) -> Path:
         """Synthetic QA and RAFT dataset directory (``dataset/``)."""
         return self.root / "dataset"

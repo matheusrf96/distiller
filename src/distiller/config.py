@@ -181,6 +181,34 @@ class EnrichmentSettings(BaseModel):
     max_context_chars: int = 500
 
 
+class ThematicSettings(BaseModel):
+    """Hierarchical summary tree and global answering settings.
+
+    Attributes:
+        window_size: Consecutive chapters summarized per level-2 window.
+        map_top_k: Summaries mapped over per global question.
+        max_source_chars: Cap for the text sent to a summarization call.
+        max_summary_chars: Cap for one generated node summary.
+    """
+
+    window_size: int = 4
+    map_top_k: int = 6
+    max_source_chars: int = 6000
+    max_summary_chars: int = 1200
+
+    @model_validator(mode="after")
+    def _validate_bounds(self) -> ThematicSettings:
+        if self.window_size < 2:
+            raise ValueError("thematic.window_size must be >= 2")
+        if self.map_top_k < 1:
+            raise ValueError("thematic.map_top_k must be >= 1")
+        if self.max_source_chars <= 0:
+            raise ValueError("thematic.max_source_chars must be > 0")
+        if self.max_summary_chars <= 0:
+            raise ValueError("thematic.max_summary_chars must be > 0")
+        return self
+
+
 class EvaluationSettings(BaseModel):
     """Evaluation settings.
 
@@ -279,6 +307,7 @@ class Settings(BaseSettings):
         chunking: Chunk sizing settings.
         retrieval: Retrieval and reranking settings.
         store: Vector store settings.
+        thematic: Summary tree and global answering settings.
         evaluation: Evaluation settings.
         training: Training dataset preparation settings.
         adapter: Served LoRA adapter endpoint settings.
@@ -301,6 +330,7 @@ class Settings(BaseSettings):
     synthesis: SynthesisSettings = Field(default_factory=SynthesisSettings)
     retrieval: RetrievalSettings = Field(default_factory=RetrievalSettings)
     store: StoreSettings = Field(default_factory=StoreSettings)
+    thematic: ThematicSettings = Field(default_factory=ThematicSettings)
     evaluation: EvaluationSettings = Field(default_factory=EvaluationSettings)
     training: TrainingSettings = Field(default_factory=TrainingSettings)
     adapter: AdapterSettings = Field(default_factory=AdapterSettings)

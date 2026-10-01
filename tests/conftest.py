@@ -16,6 +16,13 @@ import pytest
 from distiller.config import Settings, load_settings
 from distiller.models import Block, BookDocument, Chapter, Chunk, refusal_text
 from distiller.synthesis import RaftContext, RaftExample
+from distiller.thematic import (
+    SummaryNode,
+    SummaryTree,
+    chapter_node_id,
+    root_node_id,
+    window_node_id,
+)
 from distiller.utils import wrap_text
 
 FIXTURE_CHAPTERS: list[tuple[str, str]] = [
@@ -42,6 +49,7 @@ CorpusFactory = Callable[..., "tuple[BookDocument, list[Chunk]]"]
 RaftFactory = Callable[..., RaftExample]
 AdapterFactory = Callable[..., Path]
 GgufFactory = Callable[..., Path]
+TreeFactory = Callable[..., SummaryTree]
 
 # GGUF metadata value types used by the synthetic files (spec v2/v3).
 _GGUF_TYPE_UINT32 = 4
@@ -182,6 +190,79 @@ def corpus_factory() -> CorpusFactory:
         return book, chunks
 
     return _make
+
+
+@pytest.fixture()
+def tree_factory() -> TreeFactory:
+    """Factory building an in-memory thematic summary tree.
+
+    ``failed_chapters`` (1-based indices) get ``summary=None``; windows and the
+    root summarize only the children that succeeded, mirroring ``build_tree``.
+    """
+
+    def _make(
+        book: BookDocument,
+        chunks: list[Chunk],
+        *,
+        window_size: int = 4,
+        failed_chapters: tuple[int, ...] = (),
+    ) -> SummaryTree:
+        chunk_ids_by_chapter: dict[str, list[str]] = {}
+        for chunk in chunks:
+            chunk_ids_by_chapter.setdefault(chunk.chapter, []).append(chunk.id)
+
+        chapter_nodes = [
+            SummaryNode(
+                id=chapter_node_id(book.book_id, index),
+                level=1,
+                title=chapter.title,
+                summary=(
+                    None if index in failed_chapters else f"Summary of {chapter.title}."
+                ),
+                chunk_ids=chunk_ids_by_chapter.get(chapter.title, []),
+            )
+            for index, chapter in enumerate(book.chapters, start=1)
+        ]
+
+        window_nodes: list[SummaryNode] = []
+        if len(book.chapters) > window_size:
+            for start in range(0, len(chapter_nodes), window_size):
+                group = chapter_nodes[start : start + window_size]
+                window_nodes.append(
+                    SummaryNode(
+                        id=window_node_id(book.book_id, start + 1, start + len(group)),
+                        level=2,
+                        title=f"Chapters {start + 1}-{start + len(group)}",
+                        summary=_join_summaries(group),
+                        children=[node.id for node in group],
+                        chunk_ids=[
+                            chunk_id for node in group for chunk_id in node.chunk_ids
+                        ],
+                    )
+                )
+
+        children = window_nodes or chapter_nodes
+        root = SummaryNode(
+            id=root_node_id(book.book_id),
+            level=3,
+            title=book.title,
+            summary=_join_summaries(children),
+            children=[node.id for node in children],
+            chunk_ids=[chunk.id for chunk in chunks],
+        )
+        return SummaryTree(
+            book_id=book.book_id,
+            root_id=root.id,
+            nodes=[*chapter_nodes, *window_nodes, root],
+        )
+
+    return _make
+
+
+def _join_summaries(nodes: list[SummaryNode]) -> str | None:
+    """Join available child summaries, or None when every child failed."""
+    summaries = [node.summary for node in nodes if node.summary]
+    return " ".join(summaries) if summaries else None
 
 
 @pytest.fixture()
