@@ -1,9 +1,10 @@
 ---
 id: SDD-0005
-status: approved
+status: done
 supersedes:
 owner: matheus
 created: 2026-10-01
+archived: 2026-10-01
 ---
 
 # GGUF Export + Local Serving (Phase 4)
@@ -381,8 +382,13 @@ Decided at approval (2026-10-01):
 
 ## Outcomes
 
-<!-- Filled on archival. -->
-
-- **Implemented in**: <commit SHAs>
-- **Spec archived**: <date>
-- **Post-mortem notes**: <optional>
+- **Implemented in**: `2d9c001` (spec), `0263dd0` (GGUF package), `88c06df` (LLM client + connection errors), `32e2b5f` (GGUF export + comparison kind), `1d9c28a` (CLI), `0b12dda` (runbook + docs)
+- **Spec archived**: 2026-10-01
+- **Post-mortem notes**: the review caught two substantive issues before
+  implementation — AC13's offline chain was missing the `synth` step, and
+  "endpoint unconfigured" was undefined until `DISTILLER_GGUF__BASE_URL`
+  defaulted to `None`. The dependency-free reader kept this phase add-on-free
+  (no new runtime dependency), and the whole chain is smoke-testable with a
+  261-byte synthetic GGUF: register → serve → `eval --gguf` → three-way
+  `train-eval --gguf`. The only unverified step is the real T4 export and the
+  local server run, covered by `docs/gguf-runbook.md`.
