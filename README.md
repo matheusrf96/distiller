@@ -24,7 +24,7 @@ The project's thesis (backed by 2026 research):
 | Phase 2 | Synthetic QA + RAFT dataset (cloud teacher) | ✅ implemented |
 | Phase 3 | Qwen3-4B QLoRA harness: dataset prep, T4 notebook, adapter registry, base-vs-adapter eval | 🔧 harness implemented — the T4 run is manual (see [docs/qlora-runbook.md](docs/qlora-runbook.md)) |
 | Phase 4 | GGUF export + CPU/GPU-hybrid serving (llama.cpp/Ollama) | 🔧 harness implemented — the T4 export and local serving are manual (see [docs/gguf-runbook.md](docs/gguf-runbook.md)) |
-| Phase 5 | LightRAG/RAPTOR thematic layer (whole-book questions) | planned |
+| Phase 5 | Hierarchical summary tree + global whole-book answering | ✅ implemented (see [docs/thematic-questions.md](docs/thematic-questions.md)) |
 
 ## Install
 
@@ -90,6 +90,12 @@ export DISTILLER_GGUF__BASE_URL=http://localhost:8080/v1
 uv run distiller eval the-adventures-of-sherlock-holmes --gguf
 uv run distiller train-eval the-adventures-of-sherlock-holmes --gguf
 
+# 9. Whole-book questions: build the thematic summary tree (Phase 5)
+uv run distiller tree build the-adventures-of-sherlock-holmes
+uv run distiller ask the-adventures-of-sherlock-holmes "What are the book's main themes?" --global
+uv run distiller eval the-adventures-of-sherlock-holmes --global
+# ...see docs/thematic-questions.md for window sizing, caching and thematic golden items
+
 # List / inspect
 uv run distiller books
 uv run distiller info the-adventures-of-sherlock-holmes
@@ -111,8 +117,9 @@ artifacts/the-lantern-keeper/
 │   │                 #          qlora.json, train_t4.ipynb
 │   ├── adapter/      #          registered T4 adapter + run.json
 │   └── gguf/         # Phase 4: model.gguf, gguf.json, Modelfile, serve.sh
+├── thematic/         # Phase 5: tree.json, manifest.json, summaries.jsonl
 └── eval/
-    ├── report.json   # metrics per run (+ index/generator identity)
+    ├── report.json   # metrics per run (+ index/generator/retrieval identity)
     └── training.json # base-vs-adapter comparison (train-eval)
 ```
 
@@ -157,6 +164,10 @@ export DISTILLER_ADAPTER__MODEL=the-lantern-keeper-lora
 # Served GGUF (Phase 4); base_url=None disables --gguf
 export DISTILLER_GGUF__BASE_URL=http://localhost:8080/v1     # llama-server (or :11434 for Ollama)
 export DISTILLER_GGUF__MODEL=distiller-the-lantern-keeper    # optional; default is the registered name
+
+# Thematic summary tree (Phase 5)
+export DISTILLER_THEMATIC__WINDOW_SIZE=4                     # chapters per level-2 window
+export DISTILLER_THEMATIC__MAP_TOP_K=6                       # summaries mapped per global question
 ```
 
 `distiller.toml` example:
@@ -203,6 +214,9 @@ book.pdf / book.epub
         ▼
   Answer{text, citations[], contexts[]} → eval metrics (evaluation/)
         ▼
+  summary tree (chapters → windows → root) → map-reduce whole-book answers
+  (thematic/)                                 → ask --global / eval --global
+        ▼
   synth → RAFT dataset → chat splits → QLoRA notebook → adapter
   (synthesis/)            (training/)                    → base-vs-adapter eval
 ```
@@ -245,6 +259,13 @@ Design decisions worth knowing:
   Modelfile and llama.cpp `serve.sh` commands for partial GPU offload. The repo
   never launches a server; `eval --gguf` and `train-eval --gguf` evaluate the served
   model over the same golden set.
+- **Whole-book questions map-reduce over a summary tree.** `distiller tree build`
+  summarizes chapters, deterministic windows and the whole book into
+  `thematic/tree.json`, cached per node so re-runs with unchanged inputs make zero
+  LLM calls. `ask --global` maps over the most similar summaries and reduces them
+  into one cited answer (`Answer.summary_citations`), reusing the local system
+  prompt, `<doc>` evidence blocks and refusal sentence; `eval --global` records the
+  mode and tree identity in `eval/report.json`. Local retrieval stays the default.
 
 ## Code conventions
 
@@ -322,3 +343,10 @@ if outputs are distributed.
   partial GPU offload on a 4 GB card; `eval --gguf` and `train-eval --gguf` evaluate
   the served model. The T4 export and the local server are manual steps documented
   in [docs/gguf-runbook.md](docs/gguf-runbook.md).
+- **Phase 5 (thematic layer):** `distiller tree build` summarizes chapters,
+  deterministic windows and the whole book into `thematic/tree.json` with a
+  per-node cache (`summaries.jsonl`) and a provenance manifest; `ask --global`
+  and `eval --global` answer whole-book questions by mapping over the most
+  relevant summaries and reducing them into one cited answer. See
+  [docs/thematic-questions.md](docs/thematic-questions.md). Entity graphs,
+  embedding clustering and automatic local/global routing remain future work.
